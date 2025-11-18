@@ -9,14 +9,14 @@ claim_register events. Pure function, no state, no randomness, no model calls.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Dict, List, Optional
 
 try:
-    import blake3
+    from blake3 import blake3
     HAS_BLAKE3 = True
 except ImportError:
-    import hashlib
     HAS_BLAKE3 = False
 
 
