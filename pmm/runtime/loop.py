@@ -24,6 +24,7 @@ from pmm.core.semantic_extractor import (
 from pmm.core.concept_graph import ConceptGraph
 from pmm.core.concept_ops_compiler import compile_assistant_message_concepts
 from pmm.core.claim_extractor import extract_claims_from_event
+from pmm.core.claim_migration import migrate_claims_from_history
 from pmm.commitments.binding import extract_exec_binds
 from pmm.runtime.autonomy_kernel import AutonomyKernel, KernelDecision
 from pmm.runtime.prompts import compose_system_prompt
@@ -79,6 +80,9 @@ class RuntimeLoop:
             self.mirror.rebuild()
             self.autonomy = AutonomyKernel(eventlog)
         if not self.replay:
+            # One-time migration: backfill claim_register events from history
+            migrate_claims_from_history(eventlog)
+            
             self.exec_router = ExecBindRouter(eventlog)
             if not any(
                 e["kind"] == "autonomy_rule_table" for e in self.eventlog.read_all()

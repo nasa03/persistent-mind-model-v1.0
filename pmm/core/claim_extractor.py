@@ -9,9 +9,15 @@ claim_register events. Pure function, no state, no randomness, no model calls.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Dict, List, Optional
+
+try:
+    import blake3
+    HAS_BLAKE3 = True
+except ImportError:
+    import hashlib
+    HAS_BLAKE3 = False
 
 
 CLAIM_PREFIXES = {
@@ -143,68 +149,46 @@ def _build_claim_from_text(
 ) -> Dict[str, Any]:
     """Build claim from simple text format.
     
-    For simple format, we extract subject/predicate/object using basic heuristics:
-    - Subject is always "self" (the model)
-    - Text is parsed for basic patterns
+    Simple format is DEPRECATED. We only accept structured JSON.
+    This function exists for backward compatibility but returns minimal structure.
+    
+    The text is stored as-is in raw_text. No keyword parsing, no heuristics.
+    If you want structured claims, use JSON format:
+    CLAIM: {"type":"BELIEF","subject":"self","predicate":"X","object":"Y"}
     """
     claim_id = _generate_claim_id(source_event_id, raw_text)
     
-    # Simple heuristic parsing
-    subject = "self"
-    predicate = ""
-    obj = None
-    negated = False
-    
-    # Check for negation
-    text_lower = text.lower()
-    if text_lower.startswith("not ") or " not " in text_lower or "never " in text_lower:
-        negated = True
-    
-    # Try to extract predicate and object
-    # Pattern: "I am X" or "I have X" or "I prioritize X"
-    if text_lower.startswith("i am "):
-        predicate = "is"
-        obj = text[5:].strip()
-    elif text_lower.startswith("i have "):
-        predicate = "has"
-        obj = text[7:].strip()
-    elif text_lower.startswith("i prioritize "):
-        predicate = "prioritizes"
-        obj = text[13:].strip()
-    elif text_lower.startswith("i believe "):
-        predicate = "believes"
-        obj = text[10:].strip()
-    elif text_lower.startswith("i value "):
-        predicate = "values"
-        obj = text[8:].strip()
-    else:
-        # Generic: treat whole text as predicate
-        predicate = text
-        obj = None
-    
+    # No keyword parsing. Store raw text only.
+    # Subject defaults to "self", predicate is the raw text, no object.
     return {
         "claim_id": claim_id,
         "source_event_id": source_event_id,
         "type": claim_type,
-        "subject": subject,
-        "predicate": predicate,
-        "object": obj,
+        "subject": "self",
+        "predicate": text,  # Raw text as predicate, no parsing
+        "object": None,
         "raw_text": raw_text,
-        "negated": negated,
+        "negated": False,
         "strength": 1.0,
         "status": "active",
     }
 
 
 def _generate_claim_id(source_event_id: int, raw_text: str) -> str:
-    """Generate deterministic claim_id using BLAKE2b (available in stdlib).
+    """Generate deterministic claim_id using BLAKE3.
     
-    Format: blake2b(f"{event_id}:{raw_text}")[:16] (first 16 hex chars = 64 bits)
+    Format: blake3(f"{event_id}:{raw_text}")[:16] (first 16 hex chars = 64 bits)
+    Falls back to blake2b if blake3 not available.
     """
     payload = f"{source_event_id}:{raw_text}"
-    # Use hashlib.blake2b for deterministic hashing (blake3 not in stdlib)
-    h = hashlib.blake2b(payload.encode("utf-8"), digest_size=8)
-    return h.hexdigest()
+    
+    if HAS_BLAKE3:
+        h = blake3.blake3(payload.encode("utf-8"))
+        return h.hexdigest()[:16]
+    else:
+        # Fallback to blake2b if blake3 not installed
+        h = hashlib.blake2b(payload.encode("utf-8"), digest_size=8)
+        return h.hexdigest()
 
 
 def detect_contradictions(

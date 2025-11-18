@@ -12,7 +12,7 @@ from pmm.core.claim_extractor import (
 
 
 def test_extract_simple_belief():
-    """Test extraction of simple BELIEF: line."""
+    """Test extraction of simple BELIEF: line (no parsing, raw text only)."""
     event = {
         "id": 100,
         "kind": "assistant_message",
@@ -25,14 +25,15 @@ def test_extract_simple_belief():
     assert claim["type"] == "BELIEF"
     assert claim["source_event_id"] == 100
     assert claim["subject"] == "self"
-    assert claim["predicate"] == "is"
-    assert claim["object"] == "replay-centric"
+    # No keyword parsing - predicate is raw text
+    assert claim["predicate"] == "I am replay-centric"
+    assert claim["object"] is None
     assert claim["raw_text"] == "BELIEF: I am replay-centric"
     assert claim["negated"] is False
     assert claim["strength"] == 1.0
     assert claim["status"] == "active"
     # Deterministic claim_id
-    assert len(claim["claim_id"]) == 16  # blake2b 8 bytes = 16 hex chars
+    assert len(claim["claim_id"]) == 16  # blake3/blake2b 64 bits = 16 hex chars
 
 
 def test_extract_multiple_claims():
@@ -157,7 +158,7 @@ And here is more text that should be ignored.
 
 
 def test_negated_claim_detection():
-    """Test detection of negated claims."""
+    """Test that simple format does NOT parse negation (use JSON for that)."""
     event = {
         "id": 104,
         "kind": "assistant_message",
@@ -166,8 +167,10 @@ def test_negated_claim_detection():
     claims = extract_claims_from_event(event)
     
     assert len(claims) == 1
-    # Simple heuristic should detect "not" in text
-    assert claims[0]["negated"] is True
+    # No keyword parsing - negation is NOT detected in simple format
+    assert claims[0]["negated"] is False
+    # If you want negation, use JSON format
+    assert claims[0]["predicate"] == "I do not use randomness"
 
 
 def test_claim_id_generation_deterministic():

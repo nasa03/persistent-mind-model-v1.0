@@ -366,3 +366,104 @@ def test_rsm_top_tendencies_in_snapshot():
     # is_deterministic should be top (2 sources)
     assert top_tendencies[0]["predicate"] == "is_deterministic"
     assert top_tendencies[0]["sources"] == 2
+
+
+def test_rsm_emits_rsm_update_on_delta():
+    """Test that RSM emits rsm_update events when snapshot changes."""
+    log = EventLog(":memory:")
+    rsm = RecursiveSelfModel(eventlog=log)
+    
+    # Initial state - no rsm_update yet
+    events = log.read_all()
+    assert len([e for e in events if e["kind"] == "rsm_update"]) == 0
+    
+    # Add first claim - should trigger rsm_update
+    claim1 = {
+        "claim_id": "claim_1",
+        "source_event_id": 1,
+        "type": "BELIEF",
+        "subject": "self",
+        "predicate": "test",
+        "object": "value",
+        "raw_text": "BELIEF: test",
+        "negated": False,
+        "strength": 1.0,
+        "status": "active",
+    }
+    log.append(
+        kind="claim_register",
+        content=json.dumps(claim1, sort_keys=True, separators=(",", ":")),
+        meta={"source": "claim_extractor"},
+    )
+    
+    # Observe the claim
+    rsm.observe(log.get(1))
+    
+    # Should have emitted rsm_update
+    events = log.read_all()
+    rsm_updates = [e for e in events if e["kind"] == "rsm_update"]
+    assert len(rsm_updates) == 1
+    
+    # Add another claim - should trigger another rsm_update
+    claim2 = {
+        "claim_id": "claim_2",
+        "source_event_id": 3,
+        "type": "VALUE",
+        "subject": "self",
+        "predicate": "test2",
+        "object": "value2",
+        "raw_text": "VALUE: test2",
+        "negated": False,
+        "strength": 1.0,
+        "status": "active",
+    }
+    log.append(
+        kind="claim_register",
+        content=json.dumps(claim2, sort_keys=True, separators=(",", ":")),
+        meta={"source": "claim_extractor"},
+    )
+    rsm.observe(log.get(3))
+    
+    # Should have 2 rsm_update events now
+    events = log.read_all()
+    rsm_updates = [e for e in events if e["kind"] == "rsm_update"]
+    assert len(rsm_updates) == 2
+
+
+def test_rsm_update_not_emitted_on_no_delta():
+    """Test that RSM doesn't emit rsm_update if snapshot hasn't changed."""
+    log = EventLog(":memory:")
+    rsm = RecursiveSelfModel(eventlog=log)
+    
+    # Add a claim
+    claim = {
+        "claim_id": "claim_1",
+        "source_event_id": 1,
+        "type": "BELIEF",
+        "subject": "self",
+        "predicate": "test",
+        "object": "value",
+        "raw_text": "BELIEF: test",
+        "negated": False,
+        "strength": 1.0,
+        "status": "active",
+    }
+    log.append(
+        kind="claim_register",
+        content=json.dumps(claim, sort_keys=True, separators=(",", ":")),
+        meta={"source": "claim_extractor"},
+    )
+    rsm.observe(log.get(1))
+    
+    # Count rsm_update events
+    events = log.read_all()
+    rsm_updates_before = len([e for e in events if e["kind"] == "rsm_update"])
+    
+    # Add a non-claim event (should not change RSM)
+    log.append(kind="user_message", content="test", meta={})
+    rsm.observe(log.get(3))
+    
+    # Should not have emitted another rsm_update
+    events = log.read_all()
+    rsm_updates_after = len([e for e in events if e["kind"] == "rsm_update"])
+    assert rsm_updates_before == rsm_updates_after

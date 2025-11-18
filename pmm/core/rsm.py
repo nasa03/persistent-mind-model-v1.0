@@ -38,6 +38,8 @@ class RecursiveSelfModel:
         self.interaction_meta_patterns: List[str] = []
         self.reflection_intents: List[str] = []
         self._contradiction_events: List[str] = []
+        # Track last snapshot for delta detection
+        self._last_snapshot: Optional[Dict[str, Any]] = None
 
     def reset(self) -> None:
         """Clear all internal state."""
@@ -48,6 +50,7 @@ class RecursiveSelfModel:
         self.interaction_meta_patterns = []
         self.reflection_intents = []
         self._contradiction_events = []
+        self._last_snapshot = None
 
     def rebuild(self, events: Iterable[Dict[str, Any]]) -> None:
         """Rebuild internal state from the supplied ordered events."""
@@ -90,8 +93,9 @@ class RecursiveSelfModel:
             if isinstance(intent, str):
                 self.reflection_intents.append(intent)
         
-        # After each event, recompute aggregates
+        # After each event, recompute aggregates and maybe emit rsm_update
         self._compute_aggregates()
+        self._maybe_emit_rsm_update()
 
     def _process_claim_event(self, event: Dict[str, Any]) -> None:
         """Process a claim_register event and update internal claim storage."""
@@ -323,3 +327,27 @@ class RecursiveSelfModel:
     def get_claim_by_id(self, claim_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific claim by ID."""
         return self._claims.get(claim_id)
+    
+    def _maybe_emit_rsm_update(self) -> None:
+        """Emit rsm_update event if snapshot has changed (semantic delta only).
+        
+        This makes RSM a materialized view with audit trail.
+        """
+        if self.eventlog is None:
+            return
+        
+        current_snapshot = self.snapshot()
+        
+        # Skip if no change
+        if self._last_snapshot == current_snapshot:
+            return
+        
+        # Emit rsm_update event
+        self.eventlog.append(
+            kind="rsm_update",
+            content=json.dumps(current_snapshot, sort_keys=True, separators=(",", ":")),
+            meta={"source": "rsm"},
+        )
+        
+        # Update last snapshot
+        self._last_snapshot = current_snapshot
