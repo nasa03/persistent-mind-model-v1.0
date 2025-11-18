@@ -14,6 +14,9 @@ from pathlib import Path
 import textwrap
 from collections import Counter
 
+from pmm.core.event_log import EventLog
+from pmm.core.ctl_projection import concept_projection_summary
+
 
 def sha256(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
@@ -25,6 +28,9 @@ def export_session():
     if not db_path.exists():
         print(f"[ERROR] PMM database not found at {db_path}")
         return
+
+    eventlog = EventLog(str(db_path))
+    ctl_summary = concept_projection_summary(eventlog)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"chat_session_{now}_telemetry.md"
@@ -167,6 +173,15 @@ def export_session():
             md.append(f"- Event {eid}: expected `{prev}` but saw `{actual}`\n")
     else:
         md.append("✅ **No hash continuity breaks detected.**\n")
+
+    md.append("\n## 🧠 CTL Snapshot\n\n")
+    md.append(f"- **Concepts tracked:** `{ctl_summary.get('total_concepts')}`\n")
+    md.append(
+        f"- **Events with concepts:** `{ctl_summary.get('events_with_concepts')}`\n"
+    )
+    md.append(f"- **Projection version:** `{ctl_summary.get('projection_version')}`\n")
+    md.append(f"- **Projection edges:** `{ctl_summary.get('projection_edges')}`\n")
+    md.append(f"- **Mirror snapshots:** `{ctl_summary.get('mirror_snapshots')}`\n")
 
     # Highlight latest adaptive metrics where available.
     latest_stability = None

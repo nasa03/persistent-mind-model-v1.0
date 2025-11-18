@@ -17,6 +17,9 @@ from pathlib import Path
 from collections import Counter
 import textwrap
 
+from pmm.core.event_log import EventLog
+from pmm.core.ctl_projection import concept_projection_summary
+
 
 def sha256(data: str) -> str:
     """Return SHA256 digest of provided string."""
@@ -43,6 +46,9 @@ def export_session():
     if not db_path.exists():
         print(f"[ERROR] PMM database not found at {db_path}")
         return
+
+    eventlog = EventLog(str(db_path))
+    ctl_summary = concept_projection_summary(eventlog)
 
     # Common timestamp key
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
@@ -308,6 +314,21 @@ def export_session():
         telemetry.append("_No rsm_update events found in this ledger._\n\n")
 
     # Manifest for AI verification
+    telemetry.append("\n## 🧠 CTL Snapshot\n\n")
+    telemetry.append(f"- **Concepts tracked:** `{ctl_summary.get('total_concepts')}`\n")
+    telemetry.append(
+        f"- **Events with concepts:** `{ctl_summary.get('events_with_concepts')}`\n"
+    )
+    telemetry.append(
+        f"- **Projection version:** `{ctl_summary.get('projection_version')}`\n"
+    )
+    telemetry.append(
+        f"- **Projection edges:** `{ctl_summary.get('projection_edges')}`\n"
+    )
+    telemetry.append(
+        f"- **Mirror snapshots:** `{ctl_summary.get('mirror_snapshots')}`\n"
+    )
+
     manifest = {
         "export_timestamp": now,
         "linked_readable": readable_path.name,
@@ -317,6 +338,10 @@ def export_session():
         "continuity_breaks": len(breaks),
         # Digest over event hashes (column 6), not prev_hash
         "sha256_full_digest": sha256("".join(r[6] or "" for r in rows)),
+        "ctl_total_concepts": ctl_summary.get("total_concepts"),
+        "ctl_projection_version": ctl_summary.get("projection_version"),
+        "ctl_projection_edges": ctl_summary.get("projection_edges"),
+        "ctl_mirror_snapshots": ctl_summary.get("mirror_snapshots"),
     }
     telemetry.append("\n## 🧾 Verification Manifest\n\n```json\n")
     telemetry.append(json.dumps(manifest, indent=2, ensure_ascii=False))

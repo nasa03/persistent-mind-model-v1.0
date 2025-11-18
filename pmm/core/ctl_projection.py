@@ -82,3 +82,37 @@ def rebuild_ctl_from_projections(
         edges=edges,
         projection_version=projection_version,
     )
+
+
+def concept_projection_summary(eventlog: EventLog) -> Dict[str, object]:
+    """Return summary stats for CTL projections (event + Mirror/MemeGraph)."""
+    summary: Dict[str, object] = {}
+
+    cg = ConceptGraph(eventlog)
+    cg.rebuild(eventlog.read_all())
+    summary.update(cg.stats())
+
+    proj_cg = ConceptGraph(eventlog)
+    try:
+        rebuild_ctl_from_projections(eventlog, proj_cg)
+    except Exception:
+        proj_cg.rebuild(eventlog.read_all())
+    summary["projection_version"] = proj_cg.projection_version()
+    summary["projection_concepts"] = len(proj_cg.concepts)
+    summary["projection_edges"] = len(proj_cg.concept_edges)
+
+    mirror = Mirror(eventlog, enable_rsm=False, listen=False)
+    snapshots = mirror.get_concept_snapshots()
+    summary["mirror_snapshots"] = len(snapshots)
+    preview = []
+    for snap in snapshots[:3]:
+        preview.append(
+            {
+                "id": snap.get("id") or "",
+                "kind": snap.get("kind") or "",
+                "label": snap.get("label") or "",
+            }
+        )
+    summary["mirror_snapshot_preview"] = preview
+
+    return summary

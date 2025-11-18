@@ -20,6 +20,11 @@ import datetime
 from pathlib import Path
 from collections import Counter
 
+from pmm.core.event_log import EventLog
+from pmm.core.concept_graph import ConceptGraph
+from pmm.core.ctl_projection import rebuild_ctl_from_projections
+from pmm.core.mirror import Mirror
+
 
 # ------------------------------------------------------------------
 # 0. Helpers
@@ -289,6 +294,41 @@ if concept_tokens:
     print("  Top concept prefixes:")
     for prefix, count in prefix_counts.most_common(5):
         print(f"    {prefix}: {count}")
+
+print("\n-- Projection-driven CTL snapshot --")
+try:
+    eventlog = EventLog(str(db_path))
+    proj_cg = ConceptGraph(eventlog)
+    rebuild_ctl_from_projections(eventlog, proj_cg)
+    diag_proj = {
+        "projection_version": proj_cg.projection_version(),
+        "concept_nodes": len(proj_cg.concepts),
+        "concept_edges": len(proj_cg.concept_edges),
+    }
+    mirror = Mirror(eventlog, enable_rsm=False, listen=False)
+    snapshots = mirror.get_concept_snapshots()
+    diag_proj["mirror_snapshots"] = len(snapshots)
+    diagnostics["ctl_projection"] = diag_proj
+
+    print(
+        f"Projection version {proj_cg.projection_version()}: "
+        f"{len(proj_cg.concepts)} nodes, {len(proj_cg.concept_edges)} edges"
+    )
+    print(f"Mirror snapshots: {len(snapshots)}")
+    for snapshot in snapshots[:5]:
+        attrs = snapshot.get("attributes") or {}
+        last_event = (
+            attrs.get("last_event_id")
+            or attrs.get("last_updated_at")
+            or attrs.get("created_at")
+        )
+        last = last_event if last_event is not None else "n/a"
+        print(f"  - {snapshot.get('id')} ({snapshot.get('kind')}) last_event={last}")
+    if len(snapshots) > 5:
+        print(f"  ... and {len(snapshots) - 5} more snapshots")
+except Exception as exc:
+    diagnostics["ctl_projection"] = {"error": str(exc)}
+    print(f"Projection rebuild failed: {exc}")
 
 # ------------------------------------------------------------------
 # 11. Write JSON report

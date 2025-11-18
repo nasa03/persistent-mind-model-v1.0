@@ -353,12 +353,14 @@ class ConceptGraph:
         total_bindings = sum(
             len(events) for events in self.concept_event_bindings.values()
         )
+        events_with_concepts = len(self.event_to_concepts)
 
         return {
             "total_concepts": len(self.concepts),
             "total_aliases": len(self.aliases),
             "total_edges": len(self.concept_edges),
             "total_bindings": total_bindings,
+            "events_with_concepts": events_with_concepts,
             "concepts_by_kind": kind_counts,
             "edges_by_relation": relation_counts,
             "last_event_id": self.last_event_id,

@@ -9,6 +9,8 @@ import sqlite3
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+from pmm.core.event_log import EventLog
+from pmm.core.ctl_projection import concept_projection_summary
 
 
 def sha256(s: str) -> str:
@@ -35,6 +37,9 @@ def export_small():
     if not db_path.exists():
         print(f"[ERROR] Missing database: {db_path}")
         return
+
+    eventlog = EventLog(str(db_path))
+    ctl_summary = concept_projection_summary(eventlog)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     out_path = repo_root / f"chat_session_{now}_small_telemetry.md"
@@ -91,6 +96,15 @@ def export_small():
             f"{meta_lit}, {prev_lit}, {hash_lit});"
         )
     lines.append("```")
+
+    lines.append("\n## 🧠 CTL Snapshot\n")
+    lines.append(f"- **Concepts tracked:** `{ctl_summary.get('total_concepts')}`")
+    lines.append(
+        f"- **Events with concepts:** `{ctl_summary.get('events_with_concepts')}`"
+    )
+    lines.append(f"- **Projection version:** `{ctl_summary.get('projection_version')}`")
+    lines.append(f"- **Projection edges:** `{ctl_summary.get('projection_edges')}`")
+    lines.append(f"- **Mirror snapshots:** `{ctl_summary.get('mirror_snapshots')}`")
 
     lines.append("\n---\n_End of small telemetry export._\n")
 

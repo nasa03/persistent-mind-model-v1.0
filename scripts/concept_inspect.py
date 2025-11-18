@@ -14,15 +14,45 @@ Usage:
 import sys
 import json
 from pathlib import Path
+
 from pmm.core.event_log import EventLog
 from pmm.core.concept_graph import ConceptGraph
 from pmm.core.concept_metrics import check_concept_health, compute_concept_metrics
+from pmm.core.ctl_projection import rebuild_ctl_from_projections
+from pmm.core.mirror import Mirror
+
+
+def _event_concept_graph(log: EventLog) -> ConceptGraph:
+    cg = ConceptGraph(log)
+    cg.rebuild(log.read_all())
+    return cg
+
+
+def _projection_concept_graph(log: EventLog) -> ConceptGraph:
+    cg = ConceptGraph(log)
+    try:
+        rebuild_ctl_from_projections(log, cg)
+    except Exception:
+        cg.rebuild(log.read_all())
+    return cg
+
+
+def _snapshot_summary(snapshot: dict) -> str:
+    attr = snapshot.get("attributes") or {}
+    last_event = (
+        attr.get("last_event_id")
+        or attr.get("last_updated_at")
+        or attr.get("created_at")
+    )
+    last_event_str = str(last_event) if last_event is not None else "n/a"
+    label = snapshot.get("label") or ""
+    kind = snapshot.get("kind") or "unknown"
+    return f"{snapshot.get('id')} ({kind}) label={label} last_event={last_event_str}"
 
 
 def cmd_list(log: EventLog) -> None:
     """List all known concepts."""
-    cg = ConceptGraph(log)
-    cg.rebuild(log.read_all())
+    cg = _event_concept_graph(log)
 
     if not cg.concepts:
         print("No concepts defined.")
@@ -58,8 +88,7 @@ def cmd_list(log: EventLog) -> None:
 
 def cmd_show(log: EventLog, token: str) -> None:
     """Show detailed information for a concept token."""
-    cg = ConceptGraph(log)
-    cg.rebuild(log.read_all())
+    cg = _event_concept_graph(log)
 
     canonical = cg.canonical_token(token)
     defn = cg.get_definition(canonical)
@@ -119,24 +148,37 @@ def cmd_show(log: EventLog, token: str) -> None:
 
 def cmd_stats(log: EventLog) -> None:
     """Show concept layer statistics."""
-    cg = ConceptGraph(log)
-    cg.rebuild(log.read_all())
+    cg = _event_concept_graph(log)
+    proj_cg = _projection_concept_graph(log)
+    mirror = Mirror(log, enable_rsm=False, listen=False)
+    snapshots = mirror.get_concept_snapshots()
 
     stats = cg.stats()
 
     print("\n=== Concept Layer Statistics ===\n")
-    print(f"Total concepts:     {stats['total_concepts']}")
-    print(f"Total aliases:      {stats['total_aliases']}")
-    print(f"Total edges:        {stats['total_edges']}")
-    print(f"Total bindings:     {stats['total_bindings']}")
-    print(f"Events with concepts: {stats['events_with_concepts']}")
+    print(f"Total concepts:         {stats['total_concepts']}")
+    print(f"Total aliases:          {stats['total_aliases']}")
+    print(f"Total edges:            {stats['total_edges']}")
+    print(f"Total bindings:         {stats['total_bindings']}")
+    print(f"Events with concepts:   {stats['events_with_concepts']}")
+    print(
+        f"Projection version:     {proj_cg.projection_version()} "
+        f"(nodes: {len(proj_cg.concepts)}, edges: {len(proj_cg.concept_edges)})"
+    )
+
+    if snapshots:
+        print("\nMirror projection snapshots:")
+        preview = snapshots[:6]
+        for snapshot in preview:
+            print(f"  {_snapshot_summary(snapshot)}")
+        if len(snapshots) > len(preview):
+            print(f"  ... and {len(snapshots) - len(preview)} more snapshots")
 
     # Compute metrics
     metrics = compute_concept_metrics(log)
 
     print("\nConcept usage:")
     if metrics["concepts_used"]:
-        # Top 10 by usage
         top = sorted(metrics["concepts_used"].items(), key=lambda x: (-x[1], x[0]))[:10]
         for token, count in top:
             print(f"  {token:40} {count:4} refs")
