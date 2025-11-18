@@ -10,7 +10,7 @@ Append-only directed graph using NetworkX DiGraph.
 from __future__ import annotations
 
 import networkx as nx
-from typing import Dict, List, Iterable, Literal, Optional, Set
+from typing import Dict, List, Iterable, Literal, Optional, Set, TypedDict
 
 from .event_log import EventLog
 
@@ -248,3 +248,84 @@ class MemeGraph:
         ordered.extend(close_nodes)
         ordered.extend(reflection_nodes)
         return ordered
+
+
+class ConceptEdge(TypedDict, total=False):
+    """Concept-level edge derived from MemeGraph structure.
+
+    This is a projection-only type that lifts event-level edges into
+    concept relationships for CTL consumption.
+    """
+
+    source_id: str
+    target_id: str
+    relation: str
+    weight: float
+
+
+def get_concept_edges(
+    *,
+    eventlog: EventLog,
+    concept_bindings: Dict[int, Iterable[str]],
+) -> List[ConceptEdge]:
+    """Derive concept-level edges from the MemeGraph projection.
+
+    Args:
+        eventlog: EventLog backing the MemeGraph.
+        concept_bindings: Mapping from event_id -> iterable of ConceptId tokens.
+
+    Returns:
+        Deterministic list of ConceptEdge records keyed by ConceptId.
+    """
+    mg = MemeGraph(eventlog)
+    mg.rebuild(eventlog.read_all())
+
+    edges: Set[tuple[str, str, str]] = set()
+
+    # Helper: map event -> concepts (stable, canonicalized via caller)
+    def _concepts_for_event(eid: int) -> List[str]:
+        toks = concept_bindings.get(int(eid)) or []
+        return sorted({str(t) for t in toks if isinstance(t, str) and t})
+
+    # For each event node, look at neighbors and lift to concept-concept edges
+    for node in sorted(mg.graph.nodes):
+        src_eid = int(node)
+        src_concepts = _concepts_for_event(src_eid)
+        if not src_concepts:
+            continue
+
+        # Both in- and out-neighbors; labels encode relation kind where available.
+        for nbr in mg.neighbors(src_eid, direction="both"):
+            tgt_eid = int(nbr)
+            tgt_concepts = _concepts_for_event(tgt_eid)
+            if not tgt_concepts:
+                continue
+
+            # Determine a coarse relation label from the underlying event edge label.
+            label = "related"
+            edge_data = mg.graph.get_edge_data(
+                src_eid, tgt_eid
+            ) or mg.graph.get_edge_data(tgt_eid, src_eid)
+            if edge_data is not None:
+                raw = str(edge_data.get("label") or "")
+                if raw:
+                    label = raw
+
+            for c1 in src_concepts:
+                for c2 in tgt_concepts:
+                    if c1 == c2:
+                        continue
+                    edges.add((c1, c2, label))
+
+    # Convert to stable list of ConceptEdge objects
+    result: List[ConceptEdge] = []
+    for source_id, target_id, relation in sorted(edges):
+        result.append(
+            {
+                "source_id": source_id,
+                "target_id": target_id,
+                "relation": relation,
+                "weight": 1.0,
+            }
+        )
+    return result

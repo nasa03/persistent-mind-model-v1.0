@@ -11,7 +11,7 @@ and relationships between concepts. Fully rebuildable from EventLog.read_all().
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Iterable
 
 from .event_log import EventLog
 
@@ -73,8 +73,9 @@ class ConceptGraph:
         # Track relations for event bindings: (token, event_id, relation)
         self.event_binding_relations: Set[Tuple[str, int, str]] = set()
 
-        # Metadata for stats
+        # Metadata for stats / projection sync
         self.last_event_id: int = 0
+        self._projection_version: int = 0
 
     def rebuild(self, events: Optional[List[Dict[str, Any]]] = None) -> None:
         """Rebuild entire ConceptGraph from scratch."""
@@ -361,6 +362,7 @@ class ConceptGraph:
             "concepts_by_kind": kind_counts,
             "edges_by_relation": relation_counts,
             "last_event_id": self.last_event_id,
+            "projection_version": self._projection_version,
         }
 
     def all_tokens(self) -> List[str]:
@@ -375,3 +377,71 @@ class ConceptGraph:
             if concept_def.concept_kind == concept_kind
         ]
         return sorted(tokens)
+
+    # --- Projection-driven CTL helpers ---------------------------------------------
+
+    def rebuild_from_projections(
+        self,
+        *,
+        concepts: Iterable[Dict[str, Any]],
+        edges: Iterable[Tuple[str, str, str, float]] | Iterable[Dict[str, Any]],
+        projection_version: int = 0,
+    ) -> None:
+        """Rebuild ConceptGraph from higher-level projections.
+
+        This path treats Mirror/MemeGraph as upstream projections that have
+        already interpreted the EventLog. It is additive to the existing
+        event-log-driven CTL and does not modify ledger semantics.
+        """
+        # Reset core state but preserve event-level metadata where applicable.
+        self.concepts.clear()
+        self.concept_history.clear()
+        self.aliases.clear()
+        self.concept_edges.clear()
+        self.concept_event_bindings.clear()
+        self.event_to_concepts.clear()
+        self.event_binding_relations.clear()
+
+        # Rebuild from projection concepts
+        for c in concepts:
+            cid = str(c.get("id") or "")
+            if not cid:
+                continue
+            kind = str(c.get("kind") or "")
+            label = str(c.get("label") or cid)
+            attributes = dict(c.get("attributes") or {})
+            # Use projection_version as a synthetic event id/version anchor
+            concept_def = ConceptDefinition(
+                token=cid,
+                concept_kind=kind,
+                definition=label,
+                attributes=attributes,
+                version=1,
+                concept_id=cid,
+                event_id=int(projection_version),
+            )
+            self.concepts[cid] = concept_def
+            self.concept_history.setdefault(cid, []).append(concept_def)
+
+        # Rebuild from projection edges
+        for e in edges:
+            if isinstance(e, dict):
+                src = str(e.get("source_id") or "")
+                tgt = str(e.get("target_id") or "")
+                relation = str(e.get("relation") or "")
+            else:
+                # Tuple form: (source_id, target_id, relation, weight)
+                if len(e) < 3:
+                    continue
+                src = str(e[0] or "")
+                tgt = str(e[1] or "")
+                relation = str(e[2] or "")
+            if not (src and tgt and relation):
+                continue
+            self.concept_edges.add((src, tgt, relation))
+
+        self._projection_version = int(projection_version)
+
+    def projection_version(self) -> int:
+        """Return the last applied projection version."""
+        return int(self._projection_version)

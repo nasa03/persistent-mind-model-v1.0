@@ -18,7 +18,7 @@ import json
 
 from pmm.core.event_log import EventLog
 from pmm.core.mirror import Mirror
-from pmm.core.meme_graph import MemeGraph
+from pmm.core.meme_graph import MemeGraph, get_concept_edges
 from pmm.core.concept_graph import ConceptGraph
 from pmm.runtime.context_utils import (
     render_graph_context,
@@ -150,6 +150,77 @@ def expand_ids_via_graph(
             break
 
     return sorted(expanded)
+
+
+def concept_steered_ids(
+    *,
+    base_ids: List[int],
+    events: List[Dict],
+    eventlog: EventLog,
+    concept_graph: ConceptGraph | None = None,
+    max_expanded: int = 32,
+) -> List[int]:
+    """Return IDs expanded and lightly steered by CTL/MemeGraph topology.
+
+    This helper:
+    - builds a simple event->concept binding from ConceptGraph (if present)
+    - derives concept-level edges via MemeGraph
+    - uses those edges to favor events whose concepts are better connected
+
+    When ConceptGraph is None or has no concepts, it falls back to
+    expand_ids_via_graph().
+    """
+    if concept_graph is None or not concept_graph.concepts:
+        return expand_ids_via_graph(
+            base_ids=base_ids,
+            events=events,
+            eventlog=eventlog,
+            max_expanded=max_expanded,
+        )
+
+    # Build event -> ConceptId bindings from CTL
+    bindings: Dict[int, List[str]] = {}
+    for ev in events:
+        eid = ev.get("id")
+        if not isinstance(eid, int):
+            continue
+        toks = concept_graph.concepts_for_event(eid)
+        if toks:
+            bindings[eid] = toks
+
+    if not bindings:
+        return expand_ids_via_graph(
+            base_ids=base_ids,
+            events=events,
+            eventlog=eventlog,
+            max_expanded=max_expanded,
+        )
+
+    # Derive concept-level edges and a simple connectivity score per concept.
+    edges = get_concept_edges(eventlog=eventlog, concept_bindings=bindings)
+    degree: Dict[str, int] = {}
+    for e in edges:
+        src = e.get("source_id") or ""
+        tgt = e.get("target_id") or ""
+        if src:
+            degree[src] = degree.get(src, 0) + 1
+        if tgt:
+            degree[tgt] = degree.get(tgt, 0) + 1
+
+    # Score events by sum of their concepts' degrees (higher = more central).
+    def _score_event(eid: int) -> int:
+        toks = bindings.get(eid) or []
+        return sum(degree.get(t, 0) for t in toks)
+
+    # Start from graph-expanded ids, then re-rank by concept connectivity.
+    expanded = expand_ids_via_graph(
+        base_ids=base_ids, events=events, eventlog=eventlog, max_expanded=max_expanded
+    )
+    scored = [(eid, _score_event(eid)) for eid in expanded]
+    scored.sort(key=lambda t: (-t[1], t[0]))
+    # Preserve deterministic cap
+    top_ids = [eid for (eid, _s) in scored][:max_expanded]
+    return sorted(top_ids)
 
 
 def build_context_from_ids(

@@ -22,6 +22,7 @@ from pmm.core.semantic_extractor import (
     extract_reflect,
 )
 from pmm.core.concept_graph import ConceptGraph
+from pmm.core.ctl_projection import rebuild_ctl_from_projections
 from pmm.core.concept_ops_compiler import compile_assistant_message_concepts
 from pmm.core.claim_extractor import extract_claims_from_event
 from pmm.core.claim_migration import migrate_claims_from_history
@@ -68,8 +69,15 @@ class RuntimeLoop:
         self.eventlog.register_listener(self.memegraph.add_event)
         # ConceptGraph projection for CTL (rebuildable and listener-backed)
         self.concept_graph = ConceptGraph(eventlog)
-        # Seed from existing events (if any), then listen for updates
-        self.concept_graph.rebuild()
+        # Seed from existing events (if any), then listen for updates.
+        # Use the projection-driven path first so CTL nodes/edges originate
+        # from Mirror + MemeGraph, then allow event-level CTL events to
+        # augment this baseline via the listener.
+        try:
+            rebuild_ctl_from_projections(eventlog, self.concept_graph)
+        except Exception:
+            # Fallback to legacy event-driven rebuild if projections fail.
+            self.concept_graph.rebuild()
         self.eventlog.register_listener(self.concept_graph.sync)
         self.commitments = CommitmentManager(eventlog)
         self.adapter = adapter
@@ -281,12 +289,13 @@ class RuntimeLoop:
                     dims=dims,
                 )
             # Graph-augmented expansion (deterministic, capped)
-            from pmm.retrieval.vector import expand_ids_via_graph
+            from pmm.retrieval.vector import concept_steered_ids
 
-            expanded_ids = expand_ids_via_graph(
+            expanded_ids = concept_steered_ids(
                 base_ids=ids,
                 events=events_full,
                 eventlog=self.eventlog,
+                concept_graph=self.concept_graph,
                 max_expanded=max(limit * 3, limit),
             )
 

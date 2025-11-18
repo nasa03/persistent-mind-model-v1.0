@@ -1136,21 +1136,26 @@ class AutonomyKernel:
             )
 
         # 4. Concept-layer maintenance: low CTL health with many gaps/conflicts.
-        if (
-            ctl_health["total_concepts"] > 0
-            and ctl_health["health_score"] < 0.6
-            and ctl_health["gap_count"] >= 5
-        ):
-            return KernelDecision(
-                decision="reflect",
-                reasoning=(
-                    "low concept health: "
-                    f"score={ctl_health['health_score']}, "
-                    f"gaps={ctl_health['gap_count']}, "
-                    f"conflicts={ctl_health['conflict_count']}"
-                ),
-                evidence=[last_event_id],
-            )
+        if ctl_health["total_concepts"] > 0:
+            # Use health and gaps as a soft gate on reflection cadence: when CTL
+            # is unhealthy, treat the system as if the reflection interval were
+            # effectively shorter, nudging the kernel toward more introspection.
+            if (
+                ctl_health["health_score"] < 0.6
+                and ctl_health["gap_count"] >= 5
+                and len(events_since_autonomy)
+                >= max(1, self.thresholds["reflection_interval"] // 2)
+            ):
+                return KernelDecision(
+                    decision="reflect",
+                    reasoning=(
+                        "low concept health with accelerated cadence: "
+                        f"score={ctl_health['health_score']}, "
+                        f"gaps={ctl_health['gap_count']}, "
+                        f"conflicts={ctl_health['conflict_count']}"
+                    ),
+                    evidence=[last_event_id],
+                )
 
         return KernelDecision("idle", "no autonomous action needed", [])
 

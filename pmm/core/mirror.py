@@ -9,11 +9,27 @@ Passive, rebuildable denormalized cache of open commitments, stale flags, and re
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, TypedDict
 
 from .event_log import EventLog
 from .rsm import RecursiveSelfModel
 import json
+
+
+class ConceptSnapshot(TypedDict, total=False):
+    """Lightweight concept node snapshot exported by Mirror.
+
+    This is a projection-level type, not a persistent schema. It is designed
+    to be:
+    - deterministic given the underlying ledger
+    - stable enough for CTL / ConceptGraph to consume
+    - cheap to compute over the existing Mirror state
+    """
+
+    id: str
+    label: str
+    kind: str
+    attributes: Dict[str, Any]
 
 
 class Mirror:
@@ -237,3 +253,141 @@ class Mirror:
         if self._rsm is None:
             return None
         return self._rsm.get_claim_by_id(claim_id)
+
+    # --- Concept projection helpers --------------------------------------------------
+
+    def get_concept_snapshots(self) -> List[ConceptSnapshot]:
+        """Return a deterministic list of concept snapshots for CTL.
+
+        This is a minimal, projection-only view that lifts key runtime notions
+        into concept nodes:
+        - commitments (open/closed/stale)
+        - internal goals (autonomy_kernel-origin commitments)
+        - reflection activity by source
+        - stability / coherence metrics
+        - summary / identity state markers
+
+        The intent is to provide a stable hook for a projection-driven CTL
+        without changing existing Mirror behavior.
+        """
+        snapshots: List[ConceptSnapshot] = []
+
+        # Commitment concepts: one per CID
+        for cid, data in sorted(self.open_commitments.items(), key=lambda kv: kv[0]):
+            event = self.eventlog.get(data["event_id"])
+            meta = (event or {}).get("meta") or {}
+            goal = meta.get("goal") or ""
+            source = meta.get("source") or data.get("source") or "unknown"
+
+            attributes: Dict[str, Any] = {
+                "status": "open",
+                "source": source,
+                "created_at": int(data["event_id"]),
+                "last_updated_at": int(data["event_id"]),
+            }
+            if goal:
+                attributes["goal"] = goal
+
+            snapshots.append(
+                {
+                    "id": f"commitment:{cid}",
+                    "label": goal or cid,
+                    "kind": "commitment",
+                    "attributes": attributes,
+                }
+            )
+
+        # Reflection activity as coarse concepts
+        for src, count in sorted(self.reflection_counts.items(), key=lambda kv: kv[0]):
+            if count <= 0:
+                continue
+            snapshots.append(
+                {
+                    "id": f"reflection_source:{src}",
+                    "label": f"Reflections from {src}",
+                    "kind": "reflection_source",
+                    "attributes": {
+                        "count": int(count),
+                        "created_at": 0,
+                        "last_updated_at": int(self.last_event_id or 0),
+                    },
+                }
+            )
+
+        # Metric / summary concepts derived from recent events
+        events = self.eventlog.read_all()
+        last_stability = None
+        last_coherence = None
+        last_summary = None
+        for ev in reversed(events):
+            kind = ev.get("kind")
+            if last_stability is None and kind == "stability_metrics":
+                last_stability = ev
+            elif last_coherence is None and kind == "coherence_check":
+                last_coherence = ev
+            elif last_summary is None and kind == "summary_update":
+                last_summary = ev
+            if last_stability and last_coherence and last_summary:
+                break
+
+        if last_stability is not None:
+            try:
+                data = json.loads(last_stability.get("content") or "{}")
+            except Exception:
+                data = {}
+            score = None
+            if isinstance(data, dict):
+                score = data.get("stability_score")
+            attributes = {
+                "kind": "stability_metrics",
+                "last_event_id": int(last_stability.get("id", 0)),
+            }
+            if isinstance(score, (int, float)):
+                attributes["stability_score"] = float(score)
+            snapshots.append(
+                {
+                    "id": "metric:stability_score",
+                    "label": "Stability metrics",
+                    "kind": "metric",
+                    "attributes": attributes,
+                }
+            )
+
+        if last_coherence is not None:
+            try:
+                data = json.loads(last_coherence.get("content") or "{}")
+            except Exception:
+                data = {}
+            score = None
+            if isinstance(data, dict):
+                score = data.get("coherence_score")
+            attributes = {
+                "kind": "coherence_check",
+                "last_event_id": int(last_coherence.get("id", 0)),
+            }
+            if isinstance(score, (int, float)):
+                attributes["coherence_score"] = float(score)
+            snapshots.append(
+                {
+                    "id": "metric:coherence_score",
+                    "label": "Coherence metrics",
+                    "kind": "metric",
+                    "attributes": attributes,
+                }
+            )
+
+        if last_summary is not None:
+            attributes = {
+                "kind": "summary_update",
+                "last_event_id": int(last_summary.get("id", 0)),
+            }
+            snapshots.append(
+                {
+                    "id": "topic:summary_state",
+                    "label": "Summary / identity state",
+                    "kind": "topic",
+                    "attributes": attributes,
+                }
+            )
+
+        return snapshots

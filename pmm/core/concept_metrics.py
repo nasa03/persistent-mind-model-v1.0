@@ -10,6 +10,28 @@ from pmm.core.event_log import EventLog
 from pmm.core.concept_graph import ConceptGraph
 
 
+def _get_or_build_concept_graph(eventlog: EventLog) -> ConceptGraph:
+    """Return a cached ConceptGraph attached to the EventLog, syncing new events.
+
+    This keeps concept-level metrics incremental and avoids rebuilding CTL
+    from scratch on every call, while remaining fully ledger-derived.
+    """
+    cg = getattr(eventlog, "_concept_graph_for_metrics", None)
+    if cg is None:
+        cg = ConceptGraph(eventlog)
+        cg.rebuild(eventlog.read_all())
+        setattr(eventlog, "_concept_graph_for_metrics", cg)
+        return cg
+
+    # Sync any new events since the last rebuild
+    events = eventlog.read_all()
+    for ev in events:
+        eid = ev.get("id")
+        if isinstance(eid, int) and eid > cg.last_event_id:
+            cg.sync(ev)
+    return cg
+
+
 def compute_concept_metrics(eventlog: EventLog) -> Dict[str, any]:
     """Compute concept-level metrics for RSM integration.
 
@@ -20,8 +42,7 @@ def compute_concept_metrics(eventlog: EventLog) -> Dict[str, any]:
         - concept_conflicts: List[token] - concepts with conflicting relations
         - hot_concepts: List[token] - recently active concepts
     """
-    cg = ConceptGraph(eventlog)
-    cg.rebuild(eventlog.read_all())
+    cg = _get_or_build_concept_graph(eventlog)
 
     # Compute usage counts
     concepts_used: Dict[str, int] = {}
@@ -65,8 +86,7 @@ def get_governance_concepts(eventlog: EventLog) -> List[str]:
     Returns:
         Sorted list of governance-related concept tokens
     """
-    cg = ConceptGraph(eventlog)
-    cg.rebuild(eventlog.read_all())
+    cg = _get_or_build_concept_graph(eventlog)
 
     governance_tokens: List[str] = []
     for token in cg.concepts.keys():
