@@ -75,9 +75,11 @@ def test_no_new_events_on_initialization():
 
     AutonomyKernel(log)
     events = log.read_all()
-    # Kernel may append policy/retrieval config events, but nothing else.
+    # Kernel may append policy/retrieval config events and a single rsm_update
+    # snapshot on initialization, but nothing else.
     assert len(events) >= initial_count
-    assert all(e["kind"] == "config" for e in events)
+    allowed_kinds = {"config", "rsm_update"}
+    assert all(e["kind"] in allowed_kinds for e in events)
 
 
 def test_no_new_events_on_helpers():

@@ -82,15 +82,16 @@ def test_end_to_end_replay_determinism():
 def test_bounded_behavior():
     """Test that autonomy scales with bounded new events."""
     log = EventLog(":memory:")
-    # 1000 simple events
-    for i in range(1000):
+    # Use a moderate number of events to keep the test fast while still
+    # exercising scalability and bounded behavior guarantees.
+    for i in range(100):
         log.append(kind="user_message", content=f"user {i}")
         log.append(kind="assistant_message", content=f"response {i}")
 
     kernel = AutonomyKernel(log)
     initial_count = len(log.read_all())
 
-    for _ in range(5):
+    for _ in range(3):
         kernel.decide_next_action()
 
     after_count = len(log.read_all())

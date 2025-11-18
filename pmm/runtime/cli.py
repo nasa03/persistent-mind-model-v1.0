@@ -244,7 +244,7 @@ def _prompt_for_model_choice(models: list[str]) -> str | None:
 def main() -> None:  # pragma: no cover - thin wrapper
     import argparse
     import pathlib
-    
+
     # Parse CLI arguments
     parser = argparse.ArgumentParser(
         description="Persistent Mind Model - Deterministic AI with event-sourced memory"
@@ -255,7 +255,7 @@ def main() -> None:  # pragma: no cover - thin wrapper
         help="Force full claim backfill even if already partially migrated (use only for recovery)",
     )
     args = parser.parse_args()
-    
+
     # Resolve canonical DB path with legacy fallback/migration
     data_dir = pathlib.Path(".data/pmmdb")
     canonical = data_dir / "pmm.db"
@@ -344,10 +344,12 @@ def main() -> None:  # pragma: no cover - thin wrapper
     selected, use_openai, model_name = _resolve_model_selection(choice_raw, models)
 
     console.print(f"\n[success]→ Using model: {selected}[/success]\n")
-    
+
     if args.force_claim_migration:
-        console.print("[info]⚠️  Force claim migration enabled - rescanning entire ledger[/info]\n")
-    
+        console.print(
+            "[info]⚠️  Force claim migration enabled - rescanning entire ledger[/info]\n"
+        )
+
     console.print("[prompt]Type '/exit' to quit.[/prompt]\n")
 
     elog = EventLog(db_path)

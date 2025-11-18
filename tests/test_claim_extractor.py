@@ -3,7 +3,6 @@
 
 """Tests for deterministic claim extraction from assistant_message events."""
 
-import pytest
 from pmm.core.claim_extractor import (
     extract_claims_from_event,
     detect_contradictions,
@@ -19,7 +18,7 @@ def test_extract_simple_belief():
         "content": "BELIEF: I am replay-centric",
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 1
     claim = claims[0]
     assert claim["type"] == "BELIEF"
@@ -49,7 +48,7 @@ IDENTITY: I am a ledger-grounded system
         """.strip(),
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 4
     types = [c["type"] for c in claims]
     assert "BELIEF" in types
@@ -66,7 +65,7 @@ def test_extract_structured_json_claim():
         "content": 'CLAIM: {"type":"BELIEF","subject":"self","predicate":"is_deterministic","object":"always","strength":1.0}',
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 1
     claim = claims[0]
     assert claim["type"] == "BELIEF"
@@ -88,10 +87,10 @@ def test_deterministic_claim_id():
         "kind": "assistant_message",
         "content": "BELIEF: I am replay-centric",
     }
-    
+
     claims1 = extract_claims_from_event(event1)
     claims2 = extract_claims_from_event(event2)
-    
+
     assert claims1[0]["claim_id"] == claims2[0]["claim_id"]
 
 
@@ -107,10 +106,10 @@ def test_different_event_id_different_claim_id():
         "kind": "assistant_message",
         "content": "BELIEF: I am replay-centric",
     }
-    
+
     claims1 = extract_claims_from_event(event1)
     claims2 = extract_claims_from_event(event2)
-    
+
     assert claims1[0]["claim_id"] != claims2[0]["claim_id"]
 
 
@@ -151,7 +150,7 @@ And here is more text that should be ignored.
         """.strip(),
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 2
     assert claims[0]["type"] == "BELIEF"
     assert claims[1]["type"] == "VALUE"
@@ -165,7 +164,7 @@ def test_negated_claim_detection():
         "content": "BELIEF: I do not use randomness",
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 1
     # No keyword parsing - negation is NOT detected in simple format
     assert claims[0]["negated"] is False
@@ -178,11 +177,11 @@ def test_claim_id_generation_deterministic():
     id1 = _generate_claim_id(100, "BELIEF: test")
     id2 = _generate_claim_id(100, "BELIEF: test")
     assert id1 == id2
-    
+
     # Different inputs produce different IDs
     id3 = _generate_claim_id(101, "BELIEF: test")
     assert id1 != id3
-    
+
     id4 = _generate_claim_id(100, "BELIEF: different")
     assert id1 != id4
 
@@ -199,7 +198,7 @@ def test_detect_contradictions_same_predicate_different_object():
             "status": "active",
         }
     ]
-    
+
     new_claim = {
         "claim_id": "def456",
         "subject": "self",
@@ -208,7 +207,7 @@ def test_detect_contradictions_same_predicate_different_object():
         "negated": False,
         "status": "active",
     }
-    
+
     contradictions = detect_contradictions(existing_claims, new_claim)
     assert len(contradictions) == 1
     assert "abc123" in contradictions
@@ -226,7 +225,7 @@ def test_detect_contradictions_negation_conflict():
             "status": "active",
         }
     ]
-    
+
     new_claim = {
         "claim_id": "def456",
         "subject": "self",
@@ -235,7 +234,7 @@ def test_detect_contradictions_negation_conflict():
         "negated": True,  # Negation conflict
         "status": "active",
     }
-    
+
     contradictions = detect_contradictions(existing_claims, new_claim)
     assert len(contradictions) == 1
 
@@ -252,7 +251,7 @@ def test_no_contradiction_same_claim():
             "status": "active",
         }
     ]
-    
+
     new_claim = {
         "claim_id": "def456",
         "subject": "self",
@@ -261,7 +260,7 @@ def test_no_contradiction_same_claim():
         "negated": False,
         "status": "active",
     }
-    
+
     contradictions = detect_contradictions(existing_claims, new_claim)
     assert len(contradictions) == 0
 
@@ -278,7 +277,7 @@ def test_no_contradiction_different_subject():
             "status": "active",
         }
     ]
-    
+
     new_claim = {
         "claim_id": "def456",
         "subject": "user",
@@ -287,7 +286,7 @@ def test_no_contradiction_different_subject():
         "negated": False,
         "status": "active",
     }
-    
+
     contradictions = detect_contradictions(existing_claims, new_claim)
     assert len(contradictions) == 0
 
@@ -303,10 +302,10 @@ VALUE: Determinism is paramount
 TENDENCY: I prioritize ledger coherence
         """.strip(),
     }
-    
+
     claims1 = extract_claims_from_event(event)
     claims2 = extract_claims_from_event(event)
-    
+
     assert len(claims1) == len(claims2)
     for c1, c2 in zip(claims1, claims2):
         assert c1["claim_id"] == c2["claim_id"]
@@ -325,7 +324,7 @@ def test_ontology_claim_type():
         "content": "ONTOLOGY: Conscious(x) ⇐ HasMemory(x) ∧ Reflects(x)",
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 1
     assert claims[0]["type"] == "ONTOLOGY"
 
@@ -338,10 +337,10 @@ def test_strength_normalization():
         "content": 'CLAIM: {"type":"BELIEF","subject":"self","predicate":"test","strength":2.5}',
     }
     claims = extract_claims_from_event(event)
-    
+
     assert len(claims) == 1
     assert claims[0]["strength"] == 1.0  # Capped at 1.0
-    
+
     event2 = {
         "id": 108,
         "kind": "assistant_message",

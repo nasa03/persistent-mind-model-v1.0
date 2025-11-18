@@ -253,15 +253,14 @@ The telemetry view (`GPT-5.1-telemetry.md`) confirms the hash chain (`prev_hash`
 PMM never stores hidden state. Instead, it computes projections as pure functions of the ledger (`pmm/core`):
 
 - **Mirror** reconstructs open commitments, a Recursive Self‑Model snapshot, and other derived views by replaying events.
-- **Recursive Self‑Model (RSM)** (`pmm/core/rsm.py`) scans the event history and:
-  - Counts lexical markers conditioned on `kind`:
-    - `determinism_emphasis`, `stability_emphasis`, `adaptability_emphasis`, `instantiation_capacity`, `identity_query`.
-  - Tracks knowledge gaps via repeated “CLAIM: failed” / “unknown” patterns in `assistant_message` content over a sliding window.
-  - Tracks hash‑prefix uniqueness as a proxy for event diversity (`uniqueness_emphasis`).
-  - Produces a snapshot with:
-    - `behavioral_tendencies` (bounded, capped counters; typically capped at 50).
-    - `knowledge_gaps` (topics with sustained failures).
+- **Recursive Self‑Model (RSM)** (`pmm/core/rsm.py`) scans the event history and aggregates over structured claims and reflections:
+  - Structured claims are extracted deterministically from `assistant_message` events and recorded as `claim_register` events with:
+    - `claim_id`, `source_event_id`, `type`, `subject`, `predicate`, `object`, `strength`, `status`, and `raw_text`.
+  - RSM rebuilds by folding over all `claim_register` events (and selected `reflection` events) to produce a snapshot with:
+    - `behavioral_tendencies` (aggregated scores derived from claim predicates and types).
+    - `knowledge_gaps` (derived from claims whose predicates encode unknown/“gap” status).
     - `intents` and `reflections` (intents extracted from `reflection` events).
+    - `top_tendencies` and `contradiction_events` (claims with conflicting subject/predicate/object tuples).
 - **ContextGraph** (`pmm/context/context_graph.py`) builds threads, parent/child links, and semantic tags from structured markers.
 - **MemeGraph** (`pmm/core/meme_graph.py`) constructs a causal graph and summary statistics (nodes, edges, counts by kind).
 - **Concept Token Layer (CTL)** (`pmm/core/concept_graph.py`, `pmm/core/concept_ontology.py`) defines a stable ontology of semantic tokens (identity, policy, governance, topic, ontology) and binds key system events (e.g., `stability_metrics`, `coherence_check`, `policy_update`, `summary_update`, autonomy reflections) to those concepts via `concept_bind_event`. CTL is maintained automatically by the autonomy loop and is fully reconstructable from the ledger.
