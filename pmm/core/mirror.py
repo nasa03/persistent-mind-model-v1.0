@@ -223,3 +223,17 @@ class Mirror:
         if not cid:
             return False
         return cid in self.open_commitments
+
+    # --- Claim register helpers -------------------------------------------------------
+
+    def get_claims(self) -> List[Dict[str, Any]]:
+        """Return all active claims from RSM if enabled."""
+        if self._rsm is None:
+            return []
+        return self._rsm.get_claims()
+
+    def get_claim_by_id(self, claim_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific claim by ID from RSM if enabled."""
+        if self._rsm is None:
+            return None
+        return self._rsm.get_claim_by_id(claim_id)

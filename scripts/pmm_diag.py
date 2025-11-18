@@ -146,6 +146,41 @@ diagnostics["hash_integrity"] = {
 print("Hash chain continuous" if not breaks else f"Breaks at IDs: {breaks}")
 
 # ------------------------------------------------------------------
+# 7b. RSM / Claim diagnostics
+# ------------------------------------------------------------------
+print("\n-- RSM / Claim register --")
+c.execute(
+    """SELECT content FROM events WHERE kind='rsm_update' ORDER BY id DESC LIMIT 1"""
+)
+row = c.fetchone()
+rsm_snapshot = {}
+if row:
+    try:
+        rsm_snapshot = json.loads(row[0] or "{}")
+    except Exception:
+        rsm_snapshot = {}
+
+claim_count = 0
+c.execute("""SELECT COUNT(*) FROM events WHERE kind='claim_register'""")
+res = c.fetchone()
+if res:
+    claim_count = int(res[0] or 0)
+
+diagnostics["rsm"] = {
+    "active_claim_count": rsm_snapshot.get("active_claim_count", 0),
+    "contradiction_events": len(rsm_snapshot.get("contradiction_events") or []),
+    "top_tendencies": rsm_snapshot.get("top_tendencies") or [],
+    "claim_register_events": claim_count,
+}
+
+print(f"Claim_register events: {claim_count}")
+if rsm_snapshot:
+    print(f"Active claims: {rsm_snapshot.get('active_claim_count', 0)}")
+    print(f"Contradictions: {len(rsm_snapshot.get('contradiction_events') or [])}")
+else:
+    print("No rsm_update snapshot found.")
+
+# ------------------------------------------------------------------
 # 8. **NEW** Inter-ledger reference diagnostics
 # ------------------------------------------------------------------
 print("\n-- Inter-ledger references (Sprint 14) --")

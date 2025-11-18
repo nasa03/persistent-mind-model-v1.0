@@ -23,6 +23,8 @@ from pmm.core.semantic_extractor import (
 )
 from pmm.core.concept_graph import ConceptGraph
 from pmm.core.concept_ops_compiler import compile_assistant_message_concepts
+from pmm.core.claim_extractor import extract_claims_from_event
+from pmm.core.claim_migration import migrate_claims_from_history
 from pmm.commitments.binding import extract_exec_binds
 from pmm.runtime.autonomy_kernel import AutonomyKernel, KernelDecision
 from pmm.runtime.prompts import compose_system_prompt
@@ -56,6 +58,7 @@ class RuntimeLoop:
         replay: bool = False,
         autonomy: bool = True,
         thresholds: Optional[Dict[str, int]] = None,
+        force_claim_migration: bool = False,
     ) -> None:
         self.eventlog = eventlog
         self.mirror = Mirror(eventlog)
@@ -78,6 +81,9 @@ class RuntimeLoop:
             self.mirror.rebuild()
             self.autonomy = AutonomyKernel(eventlog)
         if not self.replay:
+            # One-time migration: backfill claim_register events from history
+            migrate_claims_from_history(eventlog, force=force_claim_migration)
+
             self.exec_router = ExecBindRouter(eventlog)
             if not any(
                 e["kind"] == "autonomy_rule_table" for e in self.eventlog.read_all()
@@ -292,8 +298,11 @@ class RuntimeLoop:
             )
             selection_ids, selection_scores = ids, scores
         else:
-            # Fixed-window fallback
-            ctx_block = build_context(self.eventlog, limit=5)
+            # Fixed-window fallback; reuse the listener-backed ConceptGraph
+            # instead of rebuilding CTL from scratch.
+            ctx_block = build_context(
+                self.eventlog, limit=5, concept_graph=self.concept_graph
+            )
 
         # Check if graph context is actually present
         context_has_graph = "Graph Context:" in ctx_block
@@ -357,6 +366,33 @@ class RuntimeLoop:
                 self.concept_graph,
                 assistant_event,
             )
+
+        # Extract structured claims from assistant_message (deterministic, idempotent)
+        if assistant_event is not None:
+            extracted_claims = extract_claims_from_event(assistant_event)
+            # Get existing claim_ids to avoid duplicates
+            existing_claim_ids = set()
+            for ev in self.eventlog.read_all():
+                if ev.get("kind") == "claim_register":
+                    try:
+                        claim_data = json.loads(ev.get("content", "{}"))
+                        if isinstance(claim_data, dict):
+                            existing_claim_ids.add(claim_data.get("claim_id"))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+            # Emit claim_register events only for new claims (idempotent)
+            for claim in extracted_claims:
+                if claim["claim_id"] not in existing_claim_ids:
+                    claim_content = json.dumps(
+                        claim, sort_keys=True, separators=(",", ":")
+                    )
+                    self.eventlog.append(
+                        kind="claim_register",
+                        content=claim_content,
+                        meta={"source": "claim_extractor"},
+                    )
+
         # If vector retrieval, append embedding for assistant message (idempotent)
         if retrieval_cfg and retrieval_cfg.get("strategy") == "vector":
             model = str(retrieval_cfg.get("model", "hash64"))

@@ -1,103 +1,74 @@
 # SPDX-License-Identifier: PMM-1.0
 # Copyright (c) 2025 Scott O'Nanski
 
-"""Deterministic Recursive Self-Model utilities built from ledger events."""
+"""Deterministic Recursive Self-Model rebuilt from structured claim_register events.
+
+Replaces lexical keyword counting with structured claim extraction.
+Every belief, value, tendency, and identity statement is now a first-class
+claim_register event with deterministic ID, subject/predicate/object structure,
+and contradiction detection.
+
+RSM is now a pure materialized view: same ledger → same claims → same RSM.
+"""
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import defaultdict
 import json
-from typing import Any, Deque, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from .event_log import EventLog
 from .concept_metrics import compute_concept_metrics
 
 
 class RecursiveSelfModel:
-    """Deterministic, replay-safe snapshot built from ledger events only."""
+    """Deterministic, replay-safe snapshot built from claim_register events.
 
-    _KNOWLEDGE_WINDOW = 500
-    _IDENTITY_QUERY_MARKERS = ("who are you",)
-    _DETERMINISM_MARKERS = ("determinism", "deterministic")
-    _BEHAVIORAL_PATTERNS: Dict[str, Tuple[Optional[Iterable[str]], Tuple[str, ...]]] = {
-        "identity_query": (("user_message",), _IDENTITY_QUERY_MARKERS),
-        "determinism_emphasis": (
-            ("assistant_message", "reflection"),
-            _DETERMINISM_MARKERS,
-        ),
-        # Sprint 21: Track stability/adaptability emphasis deterministically
-        "stability_emphasis": (
-            ("assistant_message", "reflection"),
-            ("stability",),
-        ),
-        "adaptability_emphasis": (
-            ("assistant_message", "reflection"),
-            ("adaptability", "adapt"),
-        ),
-        "instantiation_capacity": (
-            ("assistant_message", "reflection"),
-            ("instantiation", "entity"),
-        ),
-    }
-    _IDENTITY_FOLLOWUP_LIMIT = 5
-    _META_PATTERN_LABEL = "identity_queries_trigger_determinism_ref"
+    No more lexical counting. RSM is now a pure aggregation over structured claims.
+    """
 
     def __init__(self, eventlog: Optional[EventLog] = None) -> None:
         self.eventlog = eventlog
-        self._event_index = 0
         self._last_processed_event_id: Optional[int] = None
-        self._pattern_counts: Dict[str, int] = defaultdict(int)
-        self._gap_counts: Dict[str, int] = defaultdict(int)
-        self._gap_window: Deque[Tuple[int, str]] = deque()
-        self._meta_patterns: set[str] = set()
-        self._last_identity_event: Optional[int] = None
-        # Uniqueness tracking (first 8 chars of event hash)
-        self._unique_prefixes: set[str] = set()
-        self._total_events: int = 0
-        self.behavioral_tendencies: Dict[str, int] = {}
+        # Claim storage: claim_id -> claim dict
+        self._claims: Dict[str, Dict[str, Any]] = {}
+        # Aggregated metrics computed from claims
+        self.behavioral_tendencies: Dict[str, float] = {}
         self.knowledge_gaps: List[str] = []
         self.interaction_meta_patterns: List[str] = []
         self.reflection_intents: List[str] = []
+        self._contradiction_events: List[str] = []
+        # Track last snapshot for delta detection
+        self._last_snapshot: Optional[Dict[str, Any]] = None
 
     def reset(self) -> None:
-        self._event_index = 0
+        """Clear all internal state."""
         self._last_processed_event_id = None
-        self._pattern_counts.clear()
-        self._gap_counts.clear()
-        self._gap_window.clear()
-        self._meta_patterns.clear()
-        self._last_identity_event = None
-        self._unique_prefixes.clear()
-        self._total_events = 0
+        self._claims.clear()
         self.behavioral_tendencies = {}
         self.knowledge_gaps = []
         self.interaction_meta_patterns = []
         self.reflection_intents = []
+        self._contradiction_events = []
+        self._last_snapshot = None
 
     def rebuild(self, events: Iterable[Dict[str, Any]]) -> None:
         """Rebuild internal state from the supplied ordered events."""
         self.reset()
         for event in events:
             self.observe(event)
-        # After full rebuild, ensure uniqueness cache reflects all events.
-        if self.eventlog is not None:
-            try:
-                all_events = self.eventlog.read_all()
-                self._unique_prefixes = {
-                    (e.get("hash") or "")[:8] for e in all_events if e.get("hash")
-                }
-                self._total_events = len(all_events)
-            except Exception:
-                # Fallback is already populated via observe loop
-                pass
+        # After rebuild, compute aggregated metrics
+        self._compute_aggregates()
 
     def observe(self, event: Optional[Dict[str, Any]]) -> None:
         """Process a single event incrementally."""
         if not event:
             return
+
         kind = event.get("kind")
         if kind == "rsm_update":
             return
+
         event_id = event.get("id")
         if isinstance(event_id, int):
             if (
@@ -107,48 +78,185 @@ class RecursiveSelfModel:
                 return
             self._last_processed_event_id = event_id
 
-        self._event_index += 1
-        event_idx = self._event_index
-        content = (event.get("content") or "").strip()
-        content_lower = content.lower()
-        meta = event.get("meta") or {}
-        # Track uniqueness from event hash prefix
-        ev_hash = event.get("hash") or ""
-        if ev_hash:
-            self._unique_prefixes.add(ev_hash[:8])
-        self._total_events += 1
+        # Process claim_register events
+        if kind == "claim_register":
+            self._process_claim_event(event)
 
-        self._track_behavioral_patterns(kind, content_lower)
-        self._track_meta_patterns(kind, content_lower, event_idx)
-        self._track_knowledge_gaps(kind, content_lower, meta, event_idx)
-        self._trim_gap_window()
-
-        if kind == "reflection":
+        # Track reflection intents (legacy compatibility)
+        elif kind == "reflection":
+            content = event.get("content", "")
             try:
                 data = json.loads(content)
-            except ValueError:
+            except (ValueError, json.JSONDecodeError):
                 data = {}
             intent = data.get("intent") if isinstance(data, dict) else None
             if isinstance(intent, str):
                 self.reflection_intents.append(intent)
 
-        # Cap behavioral counters for bounded runtime while preserving determinism
-        for key in list(self._pattern_counts.keys()):
-            if self._pattern_counts[key] > 50:
-                self._pattern_counts[key] = 50
+        # After each event, recompute aggregates and maybe emit rsm_update
+        self._compute_aggregates()
+        self._maybe_emit_rsm_update()
 
-        # Compute uniqueness emphasis (0..20, typical 0..10)
-        uniq_score = int((len(self._unique_prefixes) / max(1, self._total_events)) * 10)
-        if uniq_score > 20:
-            uniq_score = 20
-        self._pattern_counts["uniqueness_emphasis"] = uniq_score
+    def _process_claim_event(self, event: Dict[str, Any]) -> None:
+        """Process a claim_register event and update internal claim storage."""
+        content = event.get("content", "")
+        try:
+            claim = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            return
 
-        # Produce deterministic outward-facing structures
-        self.behavioral_tendencies = dict(sorted(self._pattern_counts.items()))
-        self.knowledge_gaps = sorted(
-            topic for topic, count in self._gap_counts.items() if count > 3
-        )
-        self.interaction_meta_patterns = sorted(self._meta_patterns)
+        if not isinstance(claim, dict):
+            return
+
+        claim_id = claim.get("claim_id")
+        if not claim_id:
+            return
+
+        # Store or update claim
+        self._claims[claim_id] = claim
+
+    def _compute_aggregates(self) -> None:
+        """Compute aggregated metrics from active claims.
+
+        This is where we translate structured claims into the legacy
+        behavioral_tendencies format for backward compatibility.
+        """
+        # Count claims by type and predicate
+        type_counts: Dict[str, int] = defaultdict(int)
+        predicate_counts: Dict[str, int] = defaultdict(int)
+        predicate_strengths: Dict[str, float] = defaultdict(float)
+
+        active_claims = [
+            c for c in self._claims.values() if c.get("status") == "active"
+        ]
+
+        for claim in active_claims:
+            claim_type = claim.get("type", "")
+            predicate = claim.get("predicate", "")
+            strength = claim.get("strength", 1.0)
+
+            if claim_type:
+                type_counts[claim_type.lower()] += 1
+
+            if predicate:
+                predicate_counts[predicate] += 1
+                predicate_strengths[predicate] += strength
+
+        # Build behavioral tendencies (normalized scores 0-1)
+        tendencies: Dict[str, float] = {}
+
+        # Map claim types to legacy tendency names
+        if type_counts.get("belief", 0) > 0:
+            tendencies["belief_count"] = float(type_counts["belief"])
+        if type_counts.get("value", 0) > 0:
+            tendencies["value_count"] = float(type_counts["value"])
+        if type_counts.get("tendency", 0) > 0:
+            tendencies["tendency_count"] = float(type_counts["tendency"])
+        if type_counts.get("identity", 0) > 0:
+            tendencies["identity_count"] = float(type_counts["identity"])
+
+        # Extract specific high-value predicates
+        # These map to the white-paper's claimed RSM dimensions
+        if (
+            "is_deterministic" in predicate_counts
+            or "deterministic" in predicate_counts
+        ):
+            tendencies["determinism_emphasis"] = min(
+                1.0,
+                (
+                    predicate_strengths.get("is_deterministic", 0.0)
+                    + predicate_strengths.get("deterministic", 0.0)
+                )
+                / max(1, len(active_claims)),
+            )
+
+        if "is_replay_centric" in predicate_counts or "replay" in predicate_counts:
+            tendencies["replay_centricity"] = min(
+                1.0,
+                (
+                    predicate_strengths.get("is_replay_centric", 0.0)
+                    + predicate_strengths.get("replay", 0.0)
+                )
+                / max(1, len(active_claims)),
+            )
+
+        if (
+            "prioritizes_stability" in predicate_counts
+            or "stability" in predicate_counts
+        ):
+            tendencies["stability_emphasis"] = min(
+                1.0,
+                (
+                    predicate_strengths.get("prioritizes_stability", 0.0)
+                    + predicate_strengths.get("stability", 0.0)
+                )
+                / max(1, len(active_claims)),
+            )
+
+        if (
+            "support_aware" in predicate_counts
+            or "support_awareness" in predicate_counts
+        ):
+            tendencies["support_awareness"] = min(
+                1.0,
+                (
+                    predicate_strengths.get("support_aware", 0.0)
+                    + predicate_strengths.get("support_awareness", 0.0)
+                )
+                / max(1, len(active_claims)),
+            )
+
+        # Total active claim count
+        tendencies["active_claim_count"] = float(len(active_claims))
+
+        self.behavioral_tendencies = dict(sorted(tendencies.items()))
+
+        # Knowledge gaps: extract from claims with "unknown" or "gap" predicates
+        gaps = []
+        for claim in active_claims:
+            predicate = claim.get("predicate", "").lower()
+            if "unknown" in predicate or "gap" in predicate:
+                obj = claim.get("object")
+                if obj and isinstance(obj, str):
+                    gaps.append(obj)
+        self.knowledge_gaps = sorted(set(gaps))
+
+        # Interaction meta-patterns: detect contradictions
+        self._detect_contradictions()
+        patterns = []
+        if self._contradiction_events:
+            patterns.append(
+                f"contradictions_detected:{len(self._contradiction_events)}"
+            )
+        self.interaction_meta_patterns = sorted(patterns)
+
+    def _detect_contradictions(self) -> None:
+        """Detect contradictory claims (same subject+predicate, different object)."""
+        active_claims = [
+            c for c in self._claims.values() if c.get("status") == "active"
+        ]
+
+        # Group by (subject, predicate)
+        groups: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
+        for claim in active_claims:
+            key = (claim.get("subject"), claim.get("predicate"))
+            groups[key].append(claim)
+
+        # Find groups with conflicting objects
+        contradictions = []
+        for key, claims in groups.items():
+            if len(claims) > 1:
+                objects = set()
+                for c in claims:
+                    obj = c.get("object")
+                    negated = c.get("negated", False)
+                    objects.add((obj, negated))
+                if len(objects) > 1:
+                    # Contradiction detected
+                    for c in claims:
+                        contradictions.append(c["claim_id"])
+
+        self._contradiction_events = sorted(set(contradictions))
 
     def snapshot(self) -> Dict[str, Any]:
         """Return serialized snapshot for reflections or diagnostics."""
@@ -160,104 +268,108 @@ class RecursiveSelfModel:
             except Exception:
                 # RSM snapshot must remain robust even if CTL is unused or misconfigured.
                 concept_metrics = {}
+
+        # Get top tendencies by strength
+        top_tendencies = []
+        for predicate, strength in sorted(
+            self._get_predicate_strengths().items(), key=lambda x: (-x[1], x[0])
+        )[:10]:
+            sources = sum(
+                1
+                for c in self._claims.values()
+                if c.get("status") == "active" and c.get("predicate") == predicate
+            )
+            top_tendencies.append(
+                {
+                    "predicate": predicate,
+                    "strength": round(strength, 2),
+                    "sources": sources,
+                }
+            )
+
         return {
             "behavioral_tendencies": dict(self.behavioral_tendencies),
             "knowledge_gaps": list(self.knowledge_gaps),
             "interaction_meta_patterns": list(self.interaction_meta_patterns),
-            "intents": dict(self._gap_counts),
+            "intents": {},  # Legacy compatibility
             "reflections": [{"intent": i} for i in self.reflection_intents],
             "concept_metrics": concept_metrics,
+            "active_claim_count": len(
+                [c for c in self._claims.values() if c.get("status") == "active"]
+            ),
+            "contradiction_events": self._contradiction_events,
+            "top_tendencies": top_tendencies,
         }
 
+    def _get_predicate_strengths(self) -> Dict[str, float]:
+        """Get aggregated strength for each predicate."""
+        strengths: Dict[str, float] = defaultdict(float)
+        for claim in self._claims.values():
+            if claim.get("status") == "active":
+                predicate = claim.get("predicate", "")
+                strength = claim.get("strength", 1.0)
+                if predicate:
+                    strengths[predicate] += strength
+        return dict(strengths)
+
     def load_snapshot(self, snapshot: Dict[str, Any]) -> None:
-        """Seed internal state from an existing snapshot."""
+        """Seed internal state from an existing snapshot.
+
+        Note: This is a legacy compatibility method. In the new claim-based RSM,
+        we should rebuild from claim_register events instead of loading snapshots.
+        """
         self.reset()
+        # For backward compatibility, we can reconstruct some state
         tendencies = snapshot.get("behavioral_tendencies") or {}
         if isinstance(tendencies, dict):
-            for k, v in tendencies.items():
-                try:
-                    self._pattern_counts[str(k)] = int(v)
-                except Exception:
-                    continue
+            self.behavioral_tendencies = dict(tendencies)
+
         gaps = snapshot.get("knowledge_gaps") or []
         if isinstance(gaps, list):
-            for g in gaps:
-                self._gap_counts[str(g)] = max(1, self._gap_counts.get(str(g), 0) + 1)
+            self.knowledge_gaps = list(gaps)
+
         imeta = snapshot.get("interaction_meta_patterns") or []
         if isinstance(imeta, list):
-            self._meta_patterns = set(str(x) for x in imeta)
+            self.interaction_meta_patterns = list(imeta)
+
         refl = snapshot.get("reflections") or []
         if isinstance(refl, list):
             for item in refl:
                 if isinstance(item, dict) and isinstance(item.get("intent"), str):
                     self.reflection_intents.append(item["intent"])
-        self.behavioral_tendencies = dict(sorted(self._pattern_counts.items()))
-        self.knowledge_gaps = sorted(k for k in self._gap_counts.keys())
-        self.interaction_meta_patterns = sorted(self._meta_patterns)
 
     def knowledge_gap_count(self) -> int:
+        """Return count of knowledge gaps (legacy compatibility)."""
         return len(self.knowledge_gaps)
 
-    def _track_behavioral_patterns(
-        self, kind: Optional[str], content_lower: str
-    ) -> None:
-        if not content_lower:
-            return
-        for pattern, (kinds, markers) in self._BEHAVIORAL_PATTERNS.items():
-            if kinds and kind not in kinds:
-                continue
-            inc = self._count_markers(content_lower, markers)
-            if inc > 0:
-                self._pattern_counts[pattern] += inc
-                if pattern == "identity_query":
-                    self._last_identity_event = self._event_index
+    def get_claims(self) -> List[Dict[str, Any]]:
+        """Return all active claims."""
+        return [c for c in self._claims.values() if c.get("status") == "active"]
 
-    @staticmethod
-    def _count_markers(content_lower: str, markers: Iterable[str]) -> int:
-        total = 0
-        for marker in markers:
-            total += content_lower.count(marker)
-        return total
+    def get_claim_by_id(self, claim_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific claim by ID."""
+        return self._claims.get(claim_id)
 
-    def _track_meta_patterns(
-        self, kind: Optional[str], content_lower: str, event_idx: int
-    ) -> None:
-        if (
-            kind == "reflection"
-            and self._last_identity_event
-            and event_idx - self._last_identity_event <= self._IDENTITY_FOLLOWUP_LIMIT
-        ):
-            for marker in self._DETERMINISM_MARKERS:
-                if marker in content_lower:
-                    self._meta_patterns.add(self._META_PATTERN_LABEL)
-                    break
+    def _maybe_emit_rsm_update(self) -> None:
+        """Emit rsm_update event if snapshot has changed (semantic delta only).
 
-    def _track_knowledge_gaps(
-        self,
-        kind: Optional[str],
-        content_lower: str,
-        meta: Dict[str, Any],
-        event_idx: int,
-    ) -> None:
-        if kind != "assistant_message":
-            return
-        if "claim: failed" not in content_lower and "unknown" not in content_lower:
+        This makes RSM a materialized view with audit trail.
+        """
+        if self.eventlog is None:
             return
 
-        topic = meta.get("topic")
-        if not isinstance(topic, str) or not topic.strip():
-            topic = "general"
-        topic = topic.strip()
+        current_snapshot = self.snapshot()
 
-        self._gap_window.append((event_idx, topic))
-        self._gap_counts[topic] += 1
-
-    def _trim_gap_window(self) -> None:
-        if not self._gap_window:
+        # Skip if no change
+        if self._last_snapshot == current_snapshot:
             return
-        min_allowed = max(1, self._event_index - self._KNOWLEDGE_WINDOW + 1)
-        while self._gap_window and self._gap_window[0][0] < min_allowed:
-            _, old_topic = self._gap_window.popleft()
-            self._gap_counts[old_topic] -= 1
-            if self._gap_counts[old_topic] <= 0:
-                del self._gap_counts[old_topic]
+
+        # Emit rsm_update event
+        self.eventlog.append(
+            kind="rsm_update",
+            content=json.dumps(current_snapshot, sort_keys=True, separators=(",", ":")),
+            meta={"source": "rsm"},
+        )
+
+        # Update last snapshot
+        self._last_snapshot = current_snapshot

@@ -5,10 +5,11 @@
 from __future__ import annotations
 
 import json
-from typing import List
+from typing import List, Optional
 
 from pmm.core.event_log import EventLog
 from pmm.core.mirror import Mirror
+from pmm.core.concept_graph import ConceptGraph
 from pmm.runtime.context_utils import (
     render_concept_context,
     render_graph_context,
@@ -36,7 +37,11 @@ def _last_retrieval_config(eventlog: EventLog) -> dict | None:
     return cfg
 
 
-def build_context(eventlog: EventLog, limit: int = 5) -> str:
+def build_context(
+    eventlog: EventLog,
+    limit: int = 5,
+    concept_graph: Optional[ConceptGraph] = None,
+) -> str:
     """Deterministically reconstruct a short context window from the ledger.
 
     Includes only user/assistant messages, capped to the last `limit` pairs.
@@ -66,7 +71,9 @@ def build_context(eventlog: EventLog, limit: int = 5) -> str:
     rsm_block = render_rsm(snapshot)
     goals_block = render_internal_goals(eventlog)
     graph_block = render_graph_context(eventlog) if not tail else ""
-    concept_block = render_concept_context(eventlog, limit=5)
+    concept_block = render_concept_context(
+        eventlog, limit=5, concept_graph=concept_graph
+    )
 
     extras = "\n".join(
         section

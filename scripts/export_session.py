@@ -173,6 +173,7 @@ def export_session():
     latest_coherence = None
     latest_policy_update = None
     latest_meta_policy = None
+    latest_rsm_update = None
     for eid, ts, kind, content, meta, prev_hash, hsh in reversed(rows):
         if kind == "stability_metrics" and latest_stability is None:
             latest_stability = content
@@ -182,6 +183,8 @@ def export_session():
             latest_policy_update = content
         elif kind == "meta_policy_update" and latest_meta_policy is None:
             latest_meta_policy = content
+        elif kind == "rsm_update" and latest_rsm_update is None:
+            latest_rsm_update = content
         if (
             latest_stability
             and latest_coherence
@@ -219,6 +222,32 @@ def export_session():
             mp = {}
         if isinstance(mp, dict):
             md.append(f"- Latest meta-policy changes: `{mp.get('changes')}`\n")
+
+    # RSM Snapshot (latest)
+    md.append("\n### 🪞 RSM Snapshot (latest)\n\n")
+    if latest_rsm_update:
+        try:
+            rsm = json.loads(latest_rsm_update)
+        except Exception:
+            rsm = {}
+        if isinstance(rsm, dict):
+            md.append(f"- **Active Claims:** `{rsm.get('active_claim_count', 0)}`\n")
+            contradictions = rsm.get("contradiction_events") or []
+            md.append(f"- **Contradictions:** `{len(contradictions)}`\n")
+            top = rsm.get("top_tendencies") or []
+            if top:
+                md.append("- **Top Tendencies:**\n")
+                for entry in top[:5]:
+                    pred = entry.get("predicate")
+                    strength = entry.get("strength")
+                    sources = entry.get("sources")
+                    md.append(
+                        f"  - `{pred}` (strength={strength}, sources={sources})\n"
+                    )
+        else:
+            md.append(f"- Raw rsm_update content: `{latest_rsm_update}`\n")
+    else:
+        md.append("_No rsm_update events found in this ledger._\n")
 
     # =====================
     # Phase 4: Verification Manifest (JSON block)

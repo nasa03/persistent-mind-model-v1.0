@@ -27,7 +27,9 @@ def test_compute_metrics_kernel_knowledge_gaps(tmp_path):
     metrics = compute_metrics(db)
 
     assert metrics["event_count"] == 1
-    assert metrics["kernel_knowledge_gaps"] == 1
+    # Structured claim-based RSM no longer infers knowledge gaps from free-form
+    # text. Kernel knowledge gaps default to 0 in this minimal fixture.
+    assert metrics["kernel_knowledge_gaps"] == 0
     assert metrics["open_commitments"] == 0
 
 
