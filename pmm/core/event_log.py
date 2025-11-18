@@ -33,6 +33,8 @@ class EventLog:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._listeners: List = []
+        self._last_policy_config: Optional[Dict[str, Any]] = None
+        self._policy_config_loaded = False
         self._init_db()
 
     def _init_db(self) -> None:
@@ -150,18 +152,7 @@ class EventLog:
             src = (meta or {}).get("source") or "unknown"
             # Load last policy config
             try:
-                policy = None
-                # Search from end for last policy
-                for e in self.read_all()[::-1]:
-                    if e.get("kind") != "config":
-                        continue
-                    try:
-                        data = json.loads(e.get("content") or "{}")
-                    except Exception:
-                        continue
-                    if isinstance(data, dict) and data.get("type") == "policy":
-                        policy = data
-                        break
+                policy = self._get_last_policy_config()
                 if policy and isinstance(policy.get("forbid_sources"), dict):
                     forbidden = policy["forbid_sources"].get(src)
                     if isinstance(forbidden, list) and kind in forbidden:
@@ -256,6 +247,15 @@ class EventLog:
             "prev_hash": prev_hash,
             "hash": digest,
         }
+        # Update policy cache if this is a policy config event
+        if kind == "config" and isinstance(meta, dict):
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and data.get("type") == "policy":
+                    self._last_policy_config = data
+            except Exception:
+                pass
+
         self._emit(ev)
         return ev_id
 
@@ -353,17 +353,38 @@ class EventLog:
         cid = (cid or "").strip()
         if not cid:
             return False
-        events = self.read_all()
-        for event in events:
-            if event.get("kind") != "config":
-                continue
-            content_raw = event.get("content") or ""
-            try:
-                data = json.loads(content_raw)
-            except (TypeError, json.JSONDecodeError):
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("type") == "exec_bind" and data.get("cid") == cid:
-                return True
+        # Use direct SQL query instead of read_all()
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT content FROM events WHERE kind = 'config' ORDER BY id ASC"
+            )
+            for row in cur.fetchall():
+                content_raw = row["content"] or ""
+                try:
+                    data = json.loads(content_raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") == "exec_bind" and data.get("cid") == cid:
+                    return True
         return False
+
+    def _get_last_policy_config(self) -> Optional[Dict[str, Any]]:
+        """Get the last policy config, using cache or loading from ledger."""
+        if not self._policy_config_loaded:
+            # Load policy config from ledger on first access
+            with self._lock:
+                cur = self._conn.execute(
+                    "SELECT content FROM events WHERE kind = 'config' ORDER BY id DESC"
+                )
+                for row in cur.fetchall():
+                    try:
+                        data = json.loads(row["content"] or "{}")
+                        if isinstance(data, dict) and data.get("type") == "policy":
+                            self._last_policy_config = data
+                            break
+                    except Exception:
+                        continue
+            self._policy_config_loaded = True
+        return self._last_policy_config

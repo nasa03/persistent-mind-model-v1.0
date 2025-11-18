@@ -62,10 +62,9 @@ class RuntimeLoop:
         force_claim_migration: bool = False,
     ) -> None:
         self.eventlog = eventlog
-        self.mirror = Mirror(eventlog)
+        # Create single long-lived projection instances with listeners
+        self.mirror = Mirror(eventlog, enable_rsm=True, listen=True)
         self.memegraph = MemeGraph(eventlog)
-        # wire event listeners
-        self.eventlog.register_listener(self.mirror.sync)
         self.eventlog.register_listener(self.memegraph.add_event)
         # ConceptGraph projection for CTL (rebuildable and listener-backed)
         self.concept_graph = ConceptGraph(eventlog)
@@ -79,15 +78,33 @@ class RuntimeLoop:
             # Fallback to legacy event-driven rebuild if projections fail.
             self.concept_graph.rebuild()
         self.eventlog.register_listener(self.concept_graph.sync)
-        self.commitments = CommitmentManager(eventlog)
+        self.commitments = CommitmentManager(eventlog, mirror=self.mirror)
         self.adapter = adapter
         self.replay = replay
-        self.autonomy = AutonomyKernel(eventlog, thresholds=thresholds)
+        # Pass projections to AutonomyKernel to avoid re-instantiation
+        self.autonomy = AutonomyKernel(
+            eventlog,
+            thresholds=thresholds,
+            mirror=self.mirror,
+            memegraph=self.memegraph,
+            concept_graph=self.concept_graph,
+        )
         self.tracker = AutonomyTracker(eventlog)
         self.exec_router: ExecBindRouter | None = None
         if self.replay:
+            # Rebuild projections deterministically from full ledger
+            events = self.eventlog.read_all()
             self.mirror.rebuild()
-            self.autonomy = AutonomyKernel(eventlog)
+            self.memegraph.rebuild(events)
+            self.concept_graph.rebuild()
+            # Recreate autonomy kernel with rebuilt projections
+            self.autonomy = AutonomyKernel(
+                eventlog,
+                thresholds=thresholds,
+                mirror=self.mirror,
+                memegraph=self.memegraph,
+                concept_graph=self.concept_graph,
+            )
         if not self.replay:
             # One-time migration: backfill claim_register events from history
             migrate_claims_from_history(eventlog, force=force_claim_migration)
@@ -228,7 +245,7 @@ class RuntimeLoop:
             model = str(retrieval_cfg.get("model", "hash64"))
             dims = int(retrieval_cfg.get("dims", 64))
             ensure_embedding_for_event(
-                events=self.eventlog.read_all(),
+                events=self.eventlog.read_tail(limit=1000),
                 eventlog=self.eventlog,
                 event_id=user_event_id,
                 text=user_input,
@@ -254,7 +271,8 @@ class RuntimeLoop:
                 dims = int(dims_raw)
             except Exception:
                 dims = 64
-            events_full = self.eventlog.read_all()
+            # Use bounded tail for vector retrieval (deterministic window)
+            events_full = self.eventlog.read_tail(limit=2000)
             # Prefer stored embeddings when present; fall back to on-the-fly
             index = build_index(events_full, model=model, dims=dims)
             if index:
@@ -297,6 +315,7 @@ class RuntimeLoop:
                 eventlog=self.eventlog,
                 concept_graph=self.concept_graph,
                 max_expanded=max(limit * 3, limit),
+                memegraph=self.memegraph,
             )
 
             ctx_block = build_context_from_ids(
@@ -304,13 +323,19 @@ class RuntimeLoop:
                 expanded_ids,
                 eventlog=self.eventlog,
                 concept_graph=self.concept_graph,
+                mirror=self.mirror,
+                memegraph=self.memegraph,
             )
             selection_ids, selection_scores = ids, scores
         else:
             # Fixed-window fallback; reuse the listener-backed ConceptGraph
             # instead of rebuilding CTL from scratch.
             ctx_block = build_context(
-                self.eventlog, limit=5, concept_graph=self.concept_graph
+                self.eventlog,
+                limit=5,
+                concept_graph=self.concept_graph,
+                mirror=self.mirror,
+                memegraph=self.memegraph,
             )
 
         # Check if graph context is actually present
@@ -379,16 +404,15 @@ class RuntimeLoop:
         # Extract structured claims from assistant_message (deterministic, idempotent)
         if assistant_event is not None:
             extracted_claims = extract_claims_from_event(assistant_event)
-            # Get existing claim_ids to avoid duplicates
-            existing_claim_ids = set()
-            for ev in self.eventlog.read_all():
-                if ev.get("kind") == "claim_register":
-                    try:
-                        claim_data = json.loads(ev.get("content", "{}"))
-                        if isinstance(claim_data, dict):
-                            existing_claim_ids.add(claim_data.get("claim_id"))
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+            # Get existing claim_ids to avoid duplicates using Mirror's claims
+            existing_claims = (
+                self.mirror.get_claims() if hasattr(self.mirror, "get_claims") else []
+            )
+            existing_claim_ids = {
+                claim.get("claim_id")
+                for claim in existing_claims
+                if claim.get("claim_id")
+            }
 
             # Emit claim_register events only for new claims (idempotent)
             for claim in extracted_claims:
@@ -407,7 +431,7 @@ class RuntimeLoop:
             model = str(retrieval_cfg.get("model", "hash64"))
             dims = int(retrieval_cfg.get("dims", 64))
             ensure_embedding_for_event(
-                events=self.eventlog.read_all(),
+                events=self.eventlog.read_tail(limit=1000),
                 eventlog=self.eventlog,
                 event_id=ai_event_id,
                 text=assistant_reply,

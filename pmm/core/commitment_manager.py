@@ -22,8 +22,9 @@ from .enhancements.commitment_evaluator import CommitmentEvaluator
 class CommitmentManager:
     """Manage commitment lifecycle operations against the EventLog."""
 
-    def __init__(self, eventlog: EventLog) -> None:
+    def __init__(self, eventlog: EventLog, mirror: Optional[Mirror] = None) -> None:
         self.eventlog = eventlog
+        self.mirror = mirror
 
     def open_internal(self, goal: str, reason: str = "") -> str:
         """Open an autonomy_kernel commitment; idempotent by (origin, goal)."""
@@ -149,6 +150,16 @@ class CommitmentManager:
 
     def _open_commitment_map(self) -> Dict[str, Dict[str, Any]]:
         """Return map of open commitment events keyed by cid."""
+        if self.mirror is not None:
+            # Use Mirror's open commitment tracking
+            open_events = self.mirror.get_open_commitment_events()
+            return {
+                (event.get("meta") or {}).get("cid"): event
+                for event in open_events
+                if (event.get("meta") or {}).get("cid")
+            }
+
+        # Fallback to full ledger scan
         events = self.eventlog.read_all()
         opens: Dict[str, Dict[str, Any]] = {}
         for event in events:

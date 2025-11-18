@@ -43,6 +43,7 @@ def test_replay_equals_live():
         replay_log.append(kind=e["kind"], content=e["content"], meta=e["meta"])
 
     replay_loop = RuntimeLoop(eventlog=replay_log, adapter=DummyAdapter(), replay=True)
+    replay_loop.memegraph.rebuild(replay_loop.eventlog.read_all())
     replay_events = replay_loop.run_turn("dummy")  # Should return existing
 
     # Compare autonomy-related events

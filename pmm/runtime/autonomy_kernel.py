@@ -89,7 +89,12 @@ class AutonomyKernel:
     SIGNIFICANT_TENDENCY_THRESHOLD = 5
 
     def __init__(
-        self, eventlog: EventLog, thresholds: Optional[Dict[str, int]] = None
+        self,
+        eventlog: EventLog,
+        thresholds: Optional[Dict[str, int]] = None,
+        mirror: Optional[Mirror] = None,
+        memegraph: Optional[MemeGraph] = None,
+        concept_graph: Optional[ConceptGraph] = None,
     ) -> None:
         self.eventlog = eventlog
         defaults = {
@@ -113,7 +118,16 @@ class AutonomyKernel:
         # Track last event id scanned for CTL maintenance to preserve idempotency
         self._last_concept_scan_id: int = 0
         self.commitment_manager = CommitmentManager(eventlog)
-        self.mirror = Mirror(eventlog, enable_rsm=True, listen=True)
+        # Use injected projections or create new ones
+        self.mirror = (
+            mirror
+            if mirror is not None
+            else Mirror(eventlog, enable_rsm=True, listen=True)
+        )
+        self.memegraph = memegraph if memegraph is not None else MemeGraph(eventlog)
+        self.concept_graph = (
+            concept_graph if concept_graph is not None else ConceptGraph(eventlog)
+        )
         self.context_graph = ContextGraph(eventlog)
         # Seed ContextGraph from existing events; future events are applied
         # incrementally via the context listener.
@@ -655,7 +669,7 @@ class AutonomyKernel:
     # Maintenance tasks executed during idle/reflect decisions
     def _maintain_embeddings(self) -> None:
         # Ensure embeddings coverage >=95% for vector strategy
-        events = self.eventlog.read_all()
+        events = self.eventlog.read_tail(limit=1000)
         cfg = None
         for e in reversed(events):
             if e.get("kind") == "config":
@@ -693,7 +707,7 @@ class AutonomyKernel:
             )
 
     def _verify_recent_selections(self, N: int = 5) -> None:
-        events = self.eventlog.read_all()
+        events = self.eventlog.read_tail(limit=1000)
         # Only verify if there was a recent retrieval_selection; otherwise skip
         recent_tail = events[-50:]
         if not any(e.get("kind") == "retrieval_selection" for e in recent_tail):
@@ -1055,7 +1069,7 @@ class AutonomyKernel:
         # 2. EXECUTE EXISTING GOAL
         self.execute_internal_goal(self.INTERNAL_GOAL_ANALYZE_GAPS)
         self.execute_internal_goal(self.INTERNAL_GOAL_MONITOR_RSM)
-        events = self.eventlog.read_all()
+        events = self.eventlog.read_tail(limit=500)
         if not events:
             return KernelDecision("idle", "no events recorded", [])
 
@@ -1178,7 +1192,7 @@ class AutonomyKernel:
         ):
             return None
 
-        events = self.eventlog.read_all()
+        events = self.eventlog.read_tail(limit=500)
         if not events:
             return None
 

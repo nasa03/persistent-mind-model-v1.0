@@ -11,6 +11,7 @@ from pmm.runtime.loop import RuntimeLoop
 def run_loop_dummy(db_path: str) -> list[str]:
     log = EventLog(db_path)
     loop = RuntimeLoop(eventlog=log, adapter=DummyAdapter(), replay=True)
+    loop.memegraph.rebuild(loop.eventlog.read_all())
     loop.run_turn("hello determinism")
     return log.hash_sequence()
 

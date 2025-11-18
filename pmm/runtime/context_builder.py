@@ -10,6 +10,7 @@ from typing import List, Optional
 from pmm.core.event_log import EventLog
 from pmm.core.mirror import Mirror
 from pmm.core.concept_graph import ConceptGraph
+from pmm.core.meme_graph import MemeGraph
 from pmm.runtime.context_utils import (
     render_concept_context,
     render_graph_context,
@@ -41,6 +42,8 @@ def build_context(
     eventlog: EventLog,
     limit: int = 5,
     concept_graph: Optional[ConceptGraph] = None,
+    mirror: Optional[Mirror] = None,
+    memegraph: Optional[MemeGraph] = None,
 ) -> str:
     """Deterministically reconstruct a short context window from the ledger.
 
@@ -65,12 +68,19 @@ def build_context(
     tail = lines[-(limit * 2) :]
     body = "\n".join(tail)
 
-    mirror = Mirror(eventlog, enable_rsm=True, listen=False)
-    snapshot = mirror.rsm_snapshot()
-    identity_block = render_identity_claims(eventlog)
+    # Use provided mirror or create temporary one
+    if mirror is not None:
+        snapshot = mirror.rsm_snapshot()
+    else:
+        temp_mirror = Mirror(eventlog, enable_rsm=True, listen=False)
+        snapshot = temp_mirror.rsm_snapshot()
+
+    identity_block = render_identity_claims(eventlog, mirror=mirror)
     rsm_block = render_rsm(snapshot)
-    goals_block = render_internal_goals(eventlog)
-    graph_block = render_graph_context(eventlog) if not tail else ""
+    goals_block = render_internal_goals(eventlog, mirror=mirror)
+    graph_block = (
+        render_graph_context(eventlog, memegraph=memegraph) if not tail else ""
+    )
     concept_block = render_concept_context(
         eventlog, limit=5, concept_graph=concept_graph
     )

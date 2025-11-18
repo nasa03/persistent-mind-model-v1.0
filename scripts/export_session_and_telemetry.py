@@ -12,6 +12,8 @@ import sqlite3
 import json
 import gzip
 import hashlib
+import base64
+import struct
 from datetime import datetime, timezone
 from pathlib import Path
 from collections import Counter
@@ -38,6 +40,18 @@ def _sql_literal(value: str | None) -> str:
     cleaned = cleaned.strip()
     cleaned = cleaned.replace("'", "''")
     return f"'{cleaned}'"
+
+
+def _compress_embedding(embedding_list):
+    """Convert embedding list to compressed base64 float32 bytes (no NumPy)."""
+    if not embedding_list:
+        return None
+    try:
+        # Pack floats into binary float32 (4 bytes each)
+        buf = b"".join(struct.pack("<f", float(x)) for x in embedding_list)
+        return base64.b64encode(buf).decode("ascii")
+    except Exception:
+        return None
 
 
 def export_session():
@@ -351,10 +365,65 @@ def export_session():
         f.write("\n".join(telemetry))
 
     # ============================================================
-    # 3. Compressed JSON Ledger
+    # 3. Optimized Compressed JSON Ledger
     # ============================================================
+    optimized_telemetry = {
+        "metadata": {"export_timestamp": now, "total_events": len(raw_ledger)},
+        "events": [],
+        "arrays": {},
+    }
+
+    array_counter = 0
+
+    for event in raw_ledger:
+        optimized_event = {
+            "id": event["id"],
+            "ts": event["ts"],
+            "kind": event["kind"],
+            "content": event["content"],
+            "meta": event["meta"],
+            "prev_hash": event["prev_hash"],
+            "hash": event["hash"],
+        }
+
+        # Embedding compression
+        try:
+            content_data = json.loads(event["content"])
+            content_modified = False
+
+            # Compress embedding arrays
+            if "embedding" in content_data and isinstance(
+                content_data["embedding"], list
+            ):
+                vector_b64 = _compress_embedding(content_data["embedding"])
+                if vector_b64:
+                    content_data["embedding_b64"] = vector_b64
+                    del content_data["embedding"]
+                    content_modified = True
+
+            # Hoist large lists to shared arrays
+            for field_name, field_value in list(content_data.items()):
+                if isinstance(field_value, list) and len(field_value) > 50:
+                    array_id = f"array_{array_counter}"
+                    array_counter += 1
+
+                    optimized_telemetry["arrays"][array_id] = field_value
+                    content_data[f"{field_name}_ref"] = array_id
+                    del content_data[field_name]
+                    content_modified = True
+
+            if content_modified:
+                optimized_event["content"] = json.dumps(
+                    content_data, separators=(",", ":")
+                )
+
+        except Exception:
+            pass  # Keep original if processing fails
+
+        optimized_telemetry["events"].append(optimized_event)
+
     with gzip.open(ledger_path, "wt", encoding="utf-8") as f:
-        json.dump(raw_ledger, f, indent=2, ensure_ascii=False)
+        json.dump(optimized_telemetry, f, separators=(",", ":"), ensure_ascii=False)
 
     print(
         f"[OK] Export complete →\n  {readable_path}\n  {telemetry_path}\n  {ledger_path}"

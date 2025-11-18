@@ -11,14 +11,18 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from pmm.core.commitment_manager import CommitmentManager
 from pmm.core.event_log import EventLog
 from pmm.core.meme_graph import MemeGraph
+from pmm.core.mirror import Mirror
 
 if TYPE_CHECKING:
     from pmm.core.concept_graph import ConceptGraph
 
 
-def render_identity_claims(eventlog: EventLog) -> str:
+def render_identity_claims(
+    eventlog: EventLog, *, mirror: Optional[Mirror] = None
+) -> str:
     """Render identity claims (e.g., name) from ledger claim events."""
-    events = eventlog.read_all()
+    # Use bounded tail read instead of full read_all()
+    events = eventlog.read_tail(limit=1000)
     identity_facts: Dict[str, str] = {}
 
     for event in events:
@@ -75,10 +79,22 @@ def render_rsm(snapshot: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_internal_goals(eventlog: EventLog) -> str:
+def render_internal_goals(
+    eventlog: EventLog, *, mirror: Optional[Mirror] = None
+) -> str:
     """Render internal goals from open commitments."""
-    manager = CommitmentManager(eventlog)
-    open_internal = manager.get_open_commitments(origin="autonomy_kernel")
+    if mirror is not None:
+        # Use mirror's open commitment events directly
+        open_events = mirror.get_open_commitment_events()
+        open_internal = [
+            e
+            for e in open_events
+            if (e.get("meta") or {}).get("origin") == "autonomy_kernel"
+        ]
+    else:
+        manager = CommitmentManager(eventlog)
+        open_internal = manager.get_open_commitments(origin="autonomy_kernel")
+
     parts: List[str] = []
     for event in open_internal:
         meta = event.get("meta") or {}
@@ -92,10 +108,16 @@ def render_internal_goals(eventlog: EventLog) -> str:
     return f"Internal Goals: {', '.join(parts)}"
 
 
-def render_graph_context(eventlog: EventLog) -> str:
+def render_graph_context(
+    eventlog: EventLog, *, memegraph: Optional[MemeGraph] = None
+) -> str:
     """Render memegraph structural context for model introspection."""
-    mg = MemeGraph(eventlog)
-    mg.rebuild(eventlog.read_all())
+    if memegraph is not None:
+        mg = memegraph
+    else:
+        mg = MemeGraph(eventlog)
+        mg.rebuild(eventlog.read_all())
+
     stats = mg.graph_stats()
 
     if stats["nodes"] < 5:

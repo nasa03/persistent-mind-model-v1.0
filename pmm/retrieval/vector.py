@@ -120,11 +120,12 @@ def expand_ids_via_graph(
     events: List[Dict],
     eventlog: EventLog,
     max_expanded: int = 32,
+    memegraph: MemeGraph | None = None,
 ) -> List[int]:
     """Return a deterministic graph-expanded id list.
 
     Strategy:
-    - rebuild MemeGraph from full event list
+    - use provided MemeGraph or rebuild from event list
     - for each base id (ascending), add its neighbors (both directions)
     - keep ordering stable by sorting unique ids at the end
     - cap total length to max_expanded
@@ -132,8 +133,11 @@ def expand_ids_via_graph(
     if not base_ids:
         return []
 
-    mg = MemeGraph(eventlog)
-    mg.rebuild(events)
+    if memegraph is not None:
+        mg = memegraph
+    else:
+        mg = MemeGraph(eventlog)
+        mg.rebuild(events)
 
     seen = set(int(eid) for eid in base_ids)
     expanded: List[int] = list(sorted(seen))
@@ -159,6 +163,7 @@ def concept_steered_ids(
     eventlog: EventLog,
     concept_graph: ConceptGraph | None = None,
     max_expanded: int = 32,
+    memegraph: MemeGraph | None = None,
 ) -> List[int]:
     """Return IDs expanded and lightly steered by CTL/MemeGraph topology.
 
@@ -176,6 +181,7 @@ def concept_steered_ids(
             events=events,
             eventlog=eventlog,
             max_expanded=max_expanded,
+            memegraph=memegraph,
         )
 
     # Build event -> ConceptId bindings from CTL
@@ -194,6 +200,7 @@ def concept_steered_ids(
             events=events,
             eventlog=eventlog,
             max_expanded=max_expanded,
+            memegraph=memegraph,
         )
 
     # Derive concept-level edges and a simple connectivity score per concept.
@@ -214,7 +221,11 @@ def concept_steered_ids(
 
     # Start from graph-expanded ids, then re-rank by concept connectivity.
     expanded = expand_ids_via_graph(
-        base_ids=base_ids, events=events, eventlog=eventlog, max_expanded=max_expanded
+        base_ids=base_ids,
+        events=events,
+        eventlog=eventlog,
+        max_expanded=max_expanded,
+        memegraph=memegraph,
     )
     scored = [(eid, _score_event(eid)) for eid in expanded]
     scored.sort(key=lambda t: (-t[1], t[0]))
@@ -229,10 +240,12 @@ def build_context_from_ids(
     *,
     eventlog: EventLog | None = None,
     concept_graph: ConceptGraph | None = None,
+    mirror: Mirror | None = None,
+    memegraph: MemeGraph | None = None,
 ) -> str:
     """Build context from selected event IDs with metadata blocks.
 
-    Includes RSM, goals, graph context, and concept context when eventlog is provided,
+    Includes RSM, goals, graph context, and concept context when projections are provided,
     matching the behavior of fixed-window context building.
     """
     # Order chronologically for readability
@@ -246,16 +259,21 @@ def build_context_from_ids(
         lines.append(f"{kind}: {content}")
     body = "\n".join(lines)
 
-    # Add metadata blocks if eventlog provided
-    if eventlog is None:
+    # Add metadata blocks if projections provided
+    if mirror is None and eventlog is None:
         return body
 
-    mirror = Mirror(eventlog, enable_rsm=True, listen=False)
-    snapshot = mirror.rsm_snapshot()
-    identity_block = render_identity_claims(eventlog)
+    # Use provided mirror or create temporary one
+    if mirror is not None:
+        snapshot = mirror.rsm_snapshot()
+    else:
+        temp_mirror = Mirror(eventlog, enable_rsm=True, listen=False)
+        snapshot = temp_mirror.rsm_snapshot()
+
+    identity_block = render_identity_claims(eventlog, mirror=mirror)
     rsm_block = render_rsm(snapshot)
-    goals_block = render_internal_goals(eventlog)
-    graph_block = render_graph_context(eventlog)
+    goals_block = render_internal_goals(eventlog, mirror=mirror)
+    graph_block = render_graph_context(eventlog, memegraph=memegraph)
     concept_block = render_concept_context(
         eventlog, limit=5, concept_graph=concept_graph
     )

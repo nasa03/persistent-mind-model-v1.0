@@ -19,6 +19,7 @@ def test_replay_does_not_mutate_ledger(tmp_path):
     loop2 = RuntimeLoop(
         eventlog=log2, adapter=DummyAdapter(), replay=True, autonomy=False
     )
+    loop2.memegraph.rebuild(loop2.eventlog.read_all())
     events_before = log2.read_all()
     loop2.run_turn("ignored in replay")
     events_after = log2.read_all()
