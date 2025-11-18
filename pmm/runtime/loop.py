@@ -58,6 +58,7 @@ class RuntimeLoop:
         replay: bool = False,
         autonomy: bool = True,
         thresholds: Optional[Dict[str, int]] = None,
+        force_claim_migration: bool = False,
     ) -> None:
         self.eventlog = eventlog
         self.mirror = Mirror(eventlog)
@@ -81,7 +82,7 @@ class RuntimeLoop:
             self.autonomy = AutonomyKernel(eventlog)
         if not self.replay:
             # One-time migration: backfill claim_register events from history
-            migrate_claims_from_history(eventlog)
+            migrate_claims_from_history(eventlog, force=force_claim_migration)
             
             self.exec_router = ExecBindRouter(eventlog)
             if not any(
