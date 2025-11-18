@@ -42,6 +42,22 @@ class Claim:
     data: Dict[str, Any]
 
 
+@dataclass
+class ClaimRegister:
+    """Structured claim extracted from assistant_message for RSM."""
+
+    claim_id: str
+    source_event_id: int
+    type: str
+    subject: str
+    predicate: str
+    object: Optional[Any]
+    raw_text: str
+    negated: bool
+    strength: float
+    status: str
+
+
 def generate_internal_cid(event_id: int) -> str:
     """Return canonical internal commitment id (zero-padded)."""
     if event_id < 0:

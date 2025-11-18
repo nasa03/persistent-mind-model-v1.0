@@ -110,6 +110,9 @@ class EventLog:
             "concept_bind_event",
             "concept_relate",
             "concept_state_snapshot",
+            # Structured RSM claim extraction
+            "claim_register",
+            "rsm_update",
         }
         binding_kinds = {
             "metric_check",

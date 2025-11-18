@@ -23,6 +23,7 @@ from pmm.core.semantic_extractor import (
 )
 from pmm.core.concept_graph import ConceptGraph
 from pmm.core.concept_ops_compiler import compile_assistant_message_concepts
+from pmm.core.claim_extractor import extract_claims_from_event
 from pmm.commitments.binding import extract_exec_binds
 from pmm.runtime.autonomy_kernel import AutonomyKernel, KernelDecision
 from pmm.runtime.prompts import compose_system_prompt
@@ -357,6 +358,31 @@ class RuntimeLoop:
                 self.concept_graph,
                 assistant_event,
             )
+        
+        # Extract structured claims from assistant_message (deterministic, idempotent)
+        if assistant_event is not None:
+            extracted_claims = extract_claims_from_event(assistant_event)
+            # Get existing claim_ids to avoid duplicates
+            existing_claim_ids = set()
+            for ev in self.eventlog.read_all():
+                if ev.get("kind") == "claim_register":
+                    try:
+                        claim_data = json.loads(ev.get("content", "{}"))
+                        if isinstance(claim_data, dict):
+                            existing_claim_ids.add(claim_data.get("claim_id"))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+            
+            # Emit claim_register events only for new claims (idempotent)
+            for claim in extracted_claims:
+                if claim["claim_id"] not in existing_claim_ids:
+                    claim_content = json.dumps(claim, sort_keys=True, separators=(",", ":"))
+                    self.eventlog.append(
+                        kind="claim_register",
+                        content=claim_content,
+                        meta={"source": "claim_extractor"},
+                    )
+        
         # If vector retrieval, append embedding for assistant message (idempotent)
         if retrieval_cfg and retrieval_cfg.get("strategy") == "vector":
             model = str(retrieval_cfg.get("model", "hash64"))
